@@ -16,7 +16,7 @@ from openai import OpenAI
 # ==========================
 # 🔑 SET YOUR API KEY
 # ==========================
-client = OpenAI(api_key="YOUR_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ==========================
 # CREATE RUN FOLDER
