@@ -1,9 +1,9 @@
-name: Run Trading Bot
+name: Run Trading System
 
 on:
   schedule:
-    - cron: '30 3 * * *'   # Runs daily (adjust later)
-  workflow_dispatch:        # Allows manual run
+    - cron: '30 1 * * *'   # ✅ 7:00 AM IST
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -27,9 +27,9 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         python main.py
-        
+
     - name: Upload Results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: trading-output
         path: charts/
