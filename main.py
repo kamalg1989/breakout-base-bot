@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT BASE SYSTEM (FINAL STABLE VERSION)
+# 🚀 BREAKOUT BASE SYSTEM (FINAL WORKING VERSION)
 # ==============================================
 
 import os
@@ -33,24 +33,19 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 GPT_PROMPT = """
 You are a professional breakout-base trading system.
 
-Follow STRICTLY:
+STRICT RULES:
 
-STEP 1 — WEEKLY
-Trend + Stage (Base1/2/3/Late)
+1. Weekly Trend & Stage (Base1/2 preferred)
+2. Base Score (0–10)
+3. Volume strength
+4. Setup (Breakout/Retest/Pullback)
+5. Pattern (MANDATORY)
 
-STEP 2 — BASE SCORE (0–10)
-Trend, Tightness, Volume, Pullback, EMA
-
-STEP 3 — VOLUME (1–3)
-STEP 4 — SETUP (0–3)
-STEP 5 — PATTERN (MANDATORY)
 If no pattern → DO NOT BUY
 
-STEP 6 — ENTRY & SL
+Final Score = Base + Stage + Volume + Setup + Pattern (max 14)
 
-STEP 7 — FINAL SCORE (max 14)
-
-STEP 8 — DECISION
+Decision:
 ≥11 BUY
 8–10 WATCH
 ≤7 AVOID
@@ -62,10 +57,7 @@ OUTPUT:
 ✅ Final Picks
 ⚠️ Notes
 
-RULES:
-- No base → reject
-- No pattern → DO NOT BUY
-- Max 2–3 trades
+Max 2–3 stocks only.
 """
 
 # ==========================
@@ -129,10 +121,9 @@ def resample_weekly(df):
     }).dropna()
 
 # ==========================
-# NSE STOCKS (FIXED)
+# NSE STOCKS
 # ==========================
 def get_all_nse_stocks():
-
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -260,7 +251,7 @@ doc.build(elements)
 print("📄 PDF Ready")
 
 # ==========================
-# GPT (FIXED FILE UPLOAD)
+# GPT FIXED
 # ==========================
 print("🚀 GPT Analysis...")
 
@@ -270,7 +261,7 @@ uploaded = client.files.create(
 )
 
 response = client.responses.create(
-    model="gpt-5.3",
+    model="gpt-4.1",
     input=[{
         "role": "user",
         "content": [
@@ -285,19 +276,12 @@ output = response.output_text
 print(output)
 
 # ==========================
-# TELEGRAM SPLIT
+# TELEGRAM SAFE SPLIT
 # ==========================
-sections = [
-    "📊 Summary Table",
-    "🎯 Execution Table",
-    "✅ Final Picks",
-    "⚠️ Notes"
-]
+chunks = [output[i:i+3500] for i in range(0, len(output), 3500)]
 
-for section in sections:
-    if section in output:
-        part = output.split(section)[1].split("📊" if section != "📊 Summary Table" else "🎯")[0]
-        send_msg(section + part)
+for chunk in chunks:
+    send_msg(chunk)
 
 send_doc(pdf_path)
 
