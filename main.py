@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 ELITE SYSTEM (STABLE - NO PARALLEL)
+# 🚀 BREAKOUT BASE SYSTEM (FINAL PRO VERSION)
 # ==============================================
 
 import os
@@ -12,11 +12,6 @@ from datetime import datetime, time as dtime
 import pytz
 import requests
 
-# PDF
-from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-
 # ==========================
 # CONFIG
 # ==========================
@@ -24,14 +19,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ==========================
-# SAFE FETCH (NO THREAD BUG)
+# SAFE FETCH (STABLE)
 # ==========================
 def fetch_data(stock, period):
 
     for _ in range(3):
         try:
-            ticker = yf.Ticker(stock)
-            df = ticker.history(period=period, auto_adjust=True)
+            df = yf.Ticker(stock).history(period=period, auto_adjust=True)
 
             if df is not None and not df.empty:
                 return df
@@ -83,12 +77,10 @@ def clean_ohlcv(df):
     for col in required:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    df = df.dropna()
-
-    return df
+    return df.dropna()
 
 # ==========================
-# WEEKLY
+# WEEKLY RESAMPLE
 # ==========================
 def resample_weekly(df):
 
@@ -114,7 +106,8 @@ def get_all_nse_stocks():
     indices = [
         "NIFTY 50","NIFTY NEXT 50","NIFTY 500",
         "NIFTY MIDCAP 150","NIFTY SMALLCAP 250",
-        "NIFTY BANK","NIFTY IT","NIFTY PHARMA"
+        "NIFTY BANK","NIFTY IT","NIFTY PHARMA",
+        "NIFTY AUTO","NIFTY FMCG","NIFTY METAL"
     ]
 
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -148,6 +141,15 @@ def get_all_nse_stocks():
     return stocks_list
 
 # ==========================
+# TELEGRAM
+# ==========================
+def send_msg(txt):
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": txt}
+    )
+
+# ==========================
 # MAIN
 # ==========================
 BASE_DIR = "charts"
@@ -164,15 +166,15 @@ stocks_all = get_all_nse_stocks()
 shortlist = []
 
 # ==========================
-# STRICT (SEQUENTIAL)
+# ELITE SCREENER (PDF ALIGNED)
 # ==========================
-print("\n🔍 Running STRICT...\n")
+print("\n🔍 Running ELITE Screener...\n")
 
 for stock in stocks_all:
 
     df = fetch_data(stock, "4mo")
 
-    if df.empty or len(df) < 80:
+    if df.empty or len(df) < 100:
         continue
 
     df = remove_incomplete_candle(df)
@@ -183,45 +185,72 @@ for stock in stocks_all:
 
     latest = df.iloc[-1]
 
+    # --------------------------
+    # 1. Liquidity
+    # --------------------------
     if latest['Close'] < 50 or latest['Volume'] < 200000:
+        continue
+
+    # --------------------------
+    # 2. Trend (Institutional bias)
+    # --------------------------
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
+    df['EMA200'] = df['Close'].ewm(span=200).mean()
+
+    if not (latest['Close'] > df['EMA50'].iloc[-1] > df['EMA200'].iloc[-1]):
+        continue
+
+    # --------------------------
+    # 3. Base (Accumulation)
+    # --------------------------
+    base = df.tail(30)
+
+    base_high = base['High'].max()
+    base_low = base['Low'].min()
+
+    range_pct = (base_high - base_low) / base_low * 100
+
+    if range_pct > 20:
+        continue
+
+    # --------------------------
+    # 4. Controlled pullback
+    # --------------------------
+    drawdown = (base_high - base_low) / base_high * 100
+
+    if drawdown > 25:
+        continue
+
+    # --------------------------
+    # 5. Volume contraction (IFP)
+    # --------------------------
+    base_vol = base['Volume'].mean()
+    prior_vol = df['Volume'].iloc[-90:-30].mean()
+
+    if base_vol > prior_vol:
+        continue
+
+    # --------------------------
+    # 6. Breakout proximity
+    # --------------------------
+    recent_high = df['High'].tail(20).max()
+
+    if latest['Close'] < 0.9 * recent_high:
+        continue
+
+    # --------------------------
+    # 7. Not extended
+    # --------------------------
+    if (latest['Close'] / base_low) > 1.3:
         continue
 
     shortlist.append(stock)
     print(f"✅ {stock}")
 
-print(f"\n📊 Strict: {len(shortlist)}")
-
-# ==========================
-# FALLBACK
-# ==========================
-if len(shortlist) == 0:
-
-    print("\n⚠️ Running FALLBACK...\n")
-
-    for stock in stocks_all:
-
-        df = fetch_data(stock, "3mo")
-
-        if df.empty or len(df) < 30:
-            continue
-
-        df = clean_ohlcv(df)
-
-        if df.empty:
-            continue
-
-        latest = df.iloc[-1]
-
-        if latest['Close'] > 50:
-            shortlist.append(stock)
-
-        if len(shortlist) >= 5:
-            break
-
 print(f"\n📊 Final Shortlist: {len(shortlist)}")
 
 # ==========================
-# CHARTS
+# CHART GENERATION
 # ==========================
 valid_stocks = []
 
@@ -255,21 +284,15 @@ for stock in shortlist[:5]:
     print(f"✅ {stock}")
 
 # ==========================
-# TELEGRAM
+# TELEGRAM OUTPUT
 # ==========================
-def send_msg(txt):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": txt}
-    )
-
 if not valid_stocks:
-    send_msg("⚠️ No valid charts today")
+    send_msg("⚠️ No valid breakout-base setups today")
     exit()
 
-msg = "📊 Daily Breakout Report\n\n"
+msg = "📊 Breakout Base Report\n\n"
 msg += "\n".join(valid_stocks)
 
 send_msg(msg)
 
-print("✅ DONE")
+print("\n✅ SYSTEM COMPLETE")
