@@ -1,5 +1,6 @@
 # ==============================================
-# 🚀 ELITE SYSTEM: NSE → SCREENER → PDF → GPT → TELEGRAM
+# 🚀 ELITE SYSTEM (FINAL VERSION)
+# NSE → SCREENER → PDF → GPT → CLEAN TELEGRAM
 # ==============================================
 
 import os
@@ -7,7 +8,6 @@ import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
 import matplotlib.pyplot as plt
-import time
 from datetime import datetime, time as dtime
 import pytz
 import requests
@@ -19,8 +19,10 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ==========================
-# 🔑 API
+# 🔧 CONFIG
 # ==========================
+DEBUG = False
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -29,7 +31,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # 🧠 REMOVE INCOMPLETE CANDLE
 # ==========================
 def remove_incomplete_candle(df):
-
     if df is None or df.empty:
         return df
 
@@ -41,9 +42,7 @@ def remove_incomplete_candle(df):
     if last_date != now.date():
         return df
 
-    market_close = dtime(15, 30)
-
-    if now.time() < market_close:
+    if now.time() < dtime(15, 30):
         return df.iloc[:-1]
 
     return df
@@ -93,13 +92,9 @@ shortlist = []
 print("\n🔍 Running ELITE Screener...\n")
 
 for stock in STOCK_UNIVERSE:
-
     try:
         df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
         df = remove_incomplete_candle(df)
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
 
         if df.empty or len(df) < 80:
             continue
@@ -107,18 +102,15 @@ for stock in STOCK_UNIVERSE:
         df = df[['Open','High','Low','Close','Volume']].dropna()
         latest = df.iloc[-1]
 
-        # Liquidity
         if latest['Close'] < 50 or latest['Volume'] < 200000:
             continue
 
-        # Trend
         df['EMA50'] = df['Close'].ewm(span=50).mean()
         df['EMA200'] = df['Close'].ewm(span=200).mean()
 
         if not (latest['Close'] > df['EMA50'].iloc[-1] > df['EMA200'].iloc[-1]):
             continue
 
-        # Base
         base = df.tail(25)
         base_high = base['High'].max()
         base_low = base['Low'].min()
@@ -127,7 +119,6 @@ for stock in STOCK_UNIVERSE:
         if range_pct > 18:
             continue
 
-        # Volume
         base_vol = base['Volume'].mean()
         prior_vol = df['Volume'].tail(60).mean()
 
@@ -137,17 +128,14 @@ for stock in STOCK_UNIVERSE:
         if not (vol_dry and vol_expand):
             continue
 
-        # Breakout
         df['High_20'] = df['High'].rolling(20).max()
         if latest['Close'] < 0.9 * df['High_20'].iloc[-1]:
             continue
 
-        # Relative strength
         df['Return_20'] = df['Close'].pct_change(20)
         if df['Return_20'].iloc[-1] < 0:
             continue
 
-        # Avoid extended
         if (latest['Close'] / base_low) > 1.25:
             continue
 
@@ -160,22 +148,17 @@ for stock in STOCK_UNIVERSE:
 print(f"\n📊 Strict Shortlist: {len(shortlist)}")
 
 # ==========================
-# 🔁 FALLBACK SCREENER
+# 🔁 FALLBACK
 # ==========================
 if len(shortlist) == 0:
-
-    print("\n⚠️ No stocks — running fallback...\n")
+    print("\n⚠️ Running fallback...\n")
 
     for stock in STOCK_UNIVERSE:
-
         try:
             df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
             df = remove_incomplete_candle(df)
 
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            if df.empty or len(df) < 60:
+            if df.empty:
                 continue
 
             df = df[['Open','High','Low','Close','Volume']].dropna()
@@ -186,18 +169,6 @@ if len(shortlist) == 0:
 
             df['EMA50'] = df['Close'].ewm(span=50).mean()
             if latest['Close'] < df['EMA50'].iloc[-1]:
-                continue
-
-            base = df.tail(20)
-            base_high = base['High'].max()
-            base_low = base['Low'].min()
-
-            range_pct = (base_high - base_low) / base_low * 100
-            if range_pct > 25:
-                continue
-
-            df['High_20'] = df['High'].rolling(20).max()
-            if latest['Close'] < 0.85 * df['High_20'].iloc[-1]:
                 continue
 
             shortlist.append(f"{stock} (F)")
@@ -221,9 +192,6 @@ if not stocks:
 # PREP
 # ==========================
 def prepare_data(df):
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
     df = df[['Open','High','Low','Close','Volume']].dropna()
 
     df['EMA10'] = df['Close'].ewm(span=10).mean()
@@ -240,36 +208,7 @@ def resample_weekly(df):
     }).dropna()
 
 # ==========================
-# PLOT
-# ==========================
-def plot_chart(df, stock, timeframe):
-
-    apds, labels = [], []
-
-    for ema, color in zip(
-        ['EMA10','EMA21','EMA50','EMA200'],
-        ['purple','cyan','blue','orange']
-    ):
-        if df[ema].notna().sum() > 5:
-            apds.append(mpf.make_addplot(df[ema], color=color))
-            labels.append(ema)
-
-    filename = f"{OUTPUT_DIR}/{stock}_{timeframe}.png"
-
-    fig, axes = mpf.plot(
-        df, type='candle', style='yahoo',
-        volume=True, addplot=apds,
-        returnfig=True
-    )
-
-    if labels:
-        axes[0].legend(labels)
-
-    fig.savefig(filename)
-    plt.close(fig)
-
-# ==========================
-# GENERATE CHARTS
+# CHARTS
 # ==========================
 print("\n📈 Generating charts...\n")
 
@@ -279,11 +218,13 @@ for stock in stocks:
         data = remove_incomplete_candle(data)
 
         df_daily = prepare_data(data)
-        plot_chart(df_daily, stock, "Daily")
+        df_weekly = prepare_data(resample_weekly(data))
 
-        df_weekly = resample_weekly(data)
-        df_weekly = prepare_data(df_weekly)
-        plot_chart(df_weekly, stock, "Weekly")
+        mpf.plot(df_daily, type='candle', volume=True,
+                 savefig=f"{OUTPUT_DIR}/{stock}_Daily.png")
+
+        mpf.plot(df_weekly, type='candle', volume=True,
+                 savefig=f"{OUTPUT_DIR}/{stock}_Weekly.png")
 
     except:
         continue
@@ -296,47 +237,39 @@ print("✅ Charts ready")
 print("\n📄 Creating PDF...\n")
 
 pdf_path = f"{OUTPUT_DIR}/charts.pdf"
-
 doc = SimpleDocTemplate(pdf_path, pagesize=letter)
 styles = getSampleStyleSheet()
 
 elements = []
 
 for stock in stocks:
-
     elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
     elements.append(Spacer(1, 10))
 
-    daily = f"{OUTPUT_DIR}/{stock}_Daily.png"
-    weekly = f"{OUTPUT_DIR}/{stock}_Weekly.png"
-
-    if os.path.exists(daily):
-        elements.append(Image(daily, width=500, height=280))
-        elements.append(Spacer(1, 10))
-
-    if os.path.exists(weekly):
-        elements.append(Image(weekly, width=500, height=280))
-        elements.append(Spacer(1, 20))
+    elements.append(Image(f"{OUTPUT_DIR}/{stock}_Daily.png", width=500, height=280))
+    elements.append(Spacer(1, 10))
+    elements.append(Image(f"{OUTPUT_DIR}/{stock}_Weekly.png", width=500, height=280))
+    elements.append(Spacer(1, 20))
 
 doc.build(elements)
 
-print(f"📄 PDF created: {pdf_path}")
+print("📄 PDF ready")
 
 # ==========================
 # GPT
 # ==========================
-print("\n🚀 Sending PDF to GPT...\n")
+print("\n🚀 Sending to GPT...\n")
 
 file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
 
-PROMPT = """Analyze ONLY charts provided using breakout-base system.
+PROMPT = """Analyze charts using breakout-base strategy.
 
-Strict scoring. No guessing.
+STRICT:
+- Score out of 14
+- No base → no trade
 
 Output:
-Summary Table
-Execution Table
-Final Picks (Top 2)
+Final Picks with reasoning
 """
 
 response = client.responses.create(
@@ -350,13 +283,10 @@ response = client.responses.create(
     }]
 )
 
-print("\n📊 GPT OUTPUT:\n")
-print(response.output_text)
-
 # ==========================
-# TELEGRAM
+# TELEGRAM CLEAN FORMAT
 # ==========================
-print("\n📲 Sending to Telegram...\n")
+print("\n📲 Sending Telegram...\n")
 
 def send_message(text):
     requests.post(
@@ -372,8 +302,35 @@ def send_document(path):
             data={"chat_id": CHAT_ID}
         )
 
+def parse_output(text):
+    buy, watch, avoid = [], [], []
+
+    for line in text.split("\n"):
+        if "Score" in line:
+            if "Score 11" in line or "Score 12" in line:
+                buy.append(line.split()[0])
+            elif "Score 8" in line or "Score 9" in line:
+                watch.append(line.split()[0])
+            else:
+                avoid.append(line.split()[0])
+
+    return buy, watch, avoid
+
+buy, watch, avoid = parse_output(response.output_text)
+
 msg = "📊 *Daily Breakout Report*\n\n"
-msg += response.output_text[:1000]
+
+if buy:
+    msg += "🔥 *Top Picks*\n"
+    msg += "\n".join([f"• {s}" for s in buy[:2]]) + "\n\n"
+
+if watch:
+    msg += "⚠️ *Watchlist*\n"
+    msg += "\n".join([f"• {s}" for s in watch[:3]]) + "\n\n"
+
+if avoid:
+    msg += "❌ *Avoid*\n"
+    msg += "\n".join([f"• {s}" for s in avoid[:3]])
 
 send_message(msg)
 send_document(pdf_path)
