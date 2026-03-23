@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 ELITE SYSTEM (FULLY OPTIMIZED PRO VERSION)
+# 🚀 ELITE SYSTEM (FINAL STABLE + FIXED VERSION)
 # ==============================================
 
 import os
@@ -42,6 +42,23 @@ def remove_incomplete_candle(df):
     return df
 
 # ==========================
+# CLEAN OHLCV (CRITICAL FIX)
+# ==========================
+def clean_ohlcv(df):
+
+    if df is None or df.empty:
+        return df
+
+    df = df[['Open','High','Low','Close','Volume']].copy()
+
+    for col in ['Open','High','Low','Close','Volume']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df = df.dropna()
+
+    return df
+
+# ==========================
 # SYMBOL VALIDATION
 # ==========================
 def is_valid_symbol(symbol):
@@ -53,12 +70,12 @@ def is_valid_symbol(symbol):
 def get_all_nse_stocks():
 
     indices = [
-        "NIFTY 50", "NIFTY NEXT 50", "NIFTY 500",
-        "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250",
-        "NIFTY BANK", "NIFTY IT", "NIFTY PHARMA",
-        "NIFTY AUTO", "NIFTY FMCG", "NIFTY METAL",
-        "NIFTY ENERGY", "NIFTY INFRA", "NIFTY PSU BANK",
-        "NIFTY 200 MOMENTUM 30", "NIFTY ALPHA 50",
+        "NIFTY 50","NIFTY NEXT 50","NIFTY 500",
+        "NIFTY MIDCAP 150","NIFTY SMALLCAP 250",
+        "NIFTY BANK","NIFTY IT","NIFTY PHARMA",
+        "NIFTY AUTO","NIFTY FMCG","NIFTY METAL",
+        "NIFTY ENERGY","NIFTY INFRA","NIFTY PSU BANK",
+        "NIFTY 200 MOMENTUM 30","NIFTY ALPHA 50",
         "NIFTY LOW VOLATILITY 50"
     ]
 
@@ -68,7 +85,16 @@ def get_all_nse_stocks():
     for index in indices:
         try:
             url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            data = requests.get(url, headers=headers).json()
+            response = requests.get(url, headers=headers)
+
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+
+            if 'data' not in data:
+                print(f"⚠️ No data for index {index}")
+                continue
 
             for item in data['data']:
                 symbol = item['symbol']
@@ -78,7 +104,6 @@ def get_all_nse_stocks():
 
         except Exception as e:
             print(f"⚠️ Failed index {index}: {e}")
-            continue
 
     stocks_list = sorted(list(stocks))
     print(f"📊 Unique stocks count: {len(stocks_list)}")
@@ -96,7 +121,11 @@ def process_stock_strict(stock):
             return None
 
         df = remove_incomplete_candle(df)
-        df = df[['Open','High','Low','Close','Volume']].dropna()
+        df = clean_ohlcv(df)
+
+        if df.empty:
+            return None
+
         latest = df.iloc[-1]
 
         if latest['Close'] < 50 or latest['Volume'] < 200000:
@@ -109,10 +138,8 @@ def process_stock_strict(stock):
             return None
 
         base = df.tail(25)
-        base_high = base['High'].max()
-        base_low = base['Low'].min()
 
-        if (base_high - base_low) / base_low * 100 > 18:
+        if (base['High'].max() - base['Low'].min()) / base['Low'].min() * 100 > 18:
             return None
 
         base_vol = base['Volume'].mean()
@@ -125,11 +152,10 @@ def process_stock_strict(stock):
         if latest['Close'] < 0.9 * df['High_20'].iloc[-1]:
             return None
 
-        df['Return_20'] = df['Close'].pct_change(20)
-        if df['Return_20'].iloc[-1] < 0:
+        if df['Close'].pct_change(20).iloc[-1] < 0:
             return None
 
-        if (latest['Close'] / base_low) > 1.25:
+        if (latest['Close'] / base['Low'].min()) > 1.25:
             return None
 
         return stock
@@ -150,7 +176,10 @@ def process_stock_fallback(stock):
                 continue
 
             df = remove_incomplete_candle(df)
-            df = df[['Open','High','Low','Close','Volume']].dropna()
+            df = clean_ohlcv(df)
+
+            if df.empty:
+                continue
 
             latest = df.iloc[-1]
 
@@ -181,12 +210,12 @@ print(f"📁 Run folder: {OUTPUT_DIR}")
 
 stocks_all = get_all_nse_stocks()
 
-# ==========================
-# STRICT SCAN
-# ==========================
 shortlist = []
 processed = set()
 
+# ==========================
+# STRICT
+# ==========================
 print("\n🔍 Running STRICT...\n")
 
 with ThreadPoolExecutor(max_workers=5) as executor:
@@ -194,7 +223,6 @@ with ThreadPoolExecutor(max_workers=5) as executor:
 
     for f in as_completed(futures):
         res = f.result()
-
         if res:
             shortlist.append(res)
             processed.add(res)
@@ -203,7 +231,7 @@ with ThreadPoolExecutor(max_workers=5) as executor:
 print(f"\n📊 Strict: {len(shortlist)}")
 
 # ==========================
-# FALLBACK SCAN
+# FALLBACK
 # ==========================
 if len(shortlist) == 0:
 
@@ -247,10 +275,14 @@ for stock in stocks:
 
         data = remove_incomplete_candle(data)
 
-        df = data[['Open','High','Low','Close','Volume']].dropna()
-        weekly = df.resample('W').last().dropna()
+        df = clean_ohlcv(data)
 
-        if df.empty or weekly.empty:
+        if df.empty:
+            continue
+
+        weekly = clean_ohlcv(df.resample('W').last())
+
+        if weekly.empty:
             continue
 
         d_path = f"{OUTPUT_DIR}/{stock}_Daily.png"
@@ -266,8 +298,26 @@ for stock in stocks:
     except Exception as e:
         print(f"⚠️ {stock}: {e}")
 
+# ==========================
+# TELEGRAM FAIL SAFE
+# ==========================
+def send_msg(txt):
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": txt, "parse_mode": "Markdown"}
+    )
+
+def send_doc(path):
+    with open(path, "rb") as f:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+            files={"document": f},
+            data={"chat_id": CHAT_ID}
+        )
+
 if not valid_stocks:
-    print("❌ No valid charts")
+    print("⚠️ No valid charts — sending fallback message")
+    send_msg("⚠️ No valid charts generated today")
     exit()
 
 # ==========================
@@ -285,39 +335,20 @@ for stock in valid_stocks:
     d = f"{OUTPUT_DIR}/{stock}_Daily.png"
     w = f"{OUTPUT_DIR}/{stock}_Weekly.png"
 
-    if os.path.exists(d) and os.path.exists(w):
-        elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
-        elements.append(Spacer(1, 10))
-        elements.append(Image(d, width=500, height=280))
-        elements.append(Spacer(1, 10))
-        elements.append(Image(w, width=500, height=280))
-        elements.append(Spacer(1, 20))
+    elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
+    elements.append(Spacer(1, 10))
+    elements.append(Image(d, width=500, height=280))
+    elements.append(Spacer(1, 10))
+    elements.append(Image(w, width=500, height=280))
+    elements.append(Spacer(1, 20))
 
 doc.build(elements)
-print("📄 PDF ready")
 
 # ==========================
 # MOCK GPT
 # ==========================
 buy = valid_stocks[:2]
 watch = valid_stocks[2:5]
-
-# ==========================
-# TELEGRAM
-# ==========================
-def send_msg(txt):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": txt, "parse_mode": "Markdown"}
-    )
-
-def send_doc(path):
-    with open(path, "rb") as f:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-            files={"document": f},
-            data={"chat_id": CHAT_ID}
-        )
 
 msg = "📊 *Daily Breakout Report*\n\n"
 
