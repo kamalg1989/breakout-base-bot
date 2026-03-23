@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 ELITE SYSTEM (FINAL HARDENED VERSION)
+# 🚀 ELITE SYSTEM (STABLE - NO PARALLEL)
 # ==============================================
 
 import os
@@ -11,17 +11,11 @@ import mplfinance as mpf
 from datetime import datetime, time as dtime
 import pytz
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # PDF
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
-
-# ==========================
-# CRITICAL FIX (DB LOCK)
-# ==========================
-yf.set_tz_cache_location(None)
 
 # ==========================
 # CONFIG
@@ -30,9 +24,30 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ==========================
+# SAFE FETCH (NO THREAD BUG)
+# ==========================
+def fetch_data(stock, period):
+
+    for _ in range(3):
+        try:
+            ticker = yf.Ticker(stock)
+            df = ticker.history(period=period, auto_adjust=True)
+
+            if df is not None and not df.empty:
+                return df
+
+        except:
+            pass
+
+        time.sleep(0.5)
+
+    return pd.DataFrame()
+
+# ==========================
 # REMOVE INCOMPLETE CANDLE
 # ==========================
 def remove_incomplete_candle(df):
+
     if df is None or df.empty:
         return df
 
@@ -48,14 +63,13 @@ def remove_incomplete_candle(df):
     return df
 
 # ==========================
-# CLEAN OHLCV (FINAL FIX)
+# CLEAN DATA
 # ==========================
 def clean_ohlcv(df):
 
     if df is None or df.empty:
         return pd.DataFrame()
 
-    # Fix MultiIndex
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -74,19 +88,20 @@ def clean_ohlcv(df):
     return df
 
 # ==========================
-# WEEKLY RESAMPLE
+# WEEKLY
 # ==========================
 def resample_weekly(df):
+
     return df.resample('W').agg({
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum'
+        'Open':'first',
+        'High':'max',
+        'Low':'min',
+        'Close':'last',
+        'Volume':'sum'
     }).dropna()
 
 # ==========================
-# SYMBOL VALIDATION
+# SYMBOL FILTER
 # ==========================
 def is_valid_symbol(symbol):
     return re.match(r'^[A-Z&]+$', symbol) is not None
@@ -99,9 +114,7 @@ def get_all_nse_stocks():
     indices = [
         "NIFTY 50","NIFTY NEXT 50","NIFTY 500",
         "NIFTY MIDCAP 150","NIFTY SMALLCAP 250",
-        "NIFTY BANK","NIFTY IT","NIFTY PHARMA",
-        "NIFTY AUTO","NIFTY FMCG","NIFTY METAL",
-        "NIFTY ENERGY","NIFTY INFRA","NIFTY PSU BANK"
+        "NIFTY BANK","NIFTY IT","NIFTY PHARMA"
     ]
 
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -110,12 +123,12 @@ def get_all_nse_stocks():
     for index in indices:
         try:
             url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            response = requests.get(url, headers=headers)
+            res = requests.get(url, headers=headers)
 
-            if response.status_code != 200:
+            if res.status_code != 200:
                 continue
 
-            data = response.json()
+            data = res.json()
 
             if 'data' not in data:
                 continue
@@ -130,81 +143,9 @@ def get_all_nse_stocks():
             continue
 
     stocks_list = sorted(list(stocks))
-    print(f"📊 Unique stocks count: {len(stocks_list)}")
+    print(f"📊 Total stocks: {len(stocks_list)}")
 
     return stocks_list
-
-# ==========================
-# STRICT
-# ==========================
-def process_stock_strict(stock):
-
-    time.sleep(0.1)
-
-    try:
-        df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
-
-        if df is None or df.empty or len(df) < 80:
-            return None
-
-        df = remove_incomplete_candle(df)
-        df = clean_ohlcv(df)
-
-        if df.empty:
-            return None
-
-        latest = df.iloc[-1]
-
-        if latest['Close'] < 50 or latest['Volume'] < 200000:
-            return None
-
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
-        df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-        if not (latest['Close'] > df['EMA50'].iloc[-1] > df['EMA200'].iloc[-1]):
-            return None
-
-        base = df.tail(25)
-
-        if (base['High'].max() - base['Low'].min()) / base['Low'].min() * 100 > 18:
-            return None
-
-        return stock
-
-    except:
-        return None
-
-# ==========================
-# FALLBACK
-# ==========================
-def process_stock_fallback(stock):
-
-    time.sleep(0.1)
-
-    try:
-        df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
-
-        if df is None or df.empty or len(df) < 30:
-            return None
-
-        df = remove_incomplete_candle(df)
-        df = clean_ohlcv(df)
-
-        if df.empty:
-            return None
-
-        latest = df.iloc[-1]
-
-        if latest['Close'] < 50:
-            return None
-
-        if latest['Close'] < 0.8 * df['High'].tail(20).max():
-            return None
-
-        return stock + " (F)"
-
-    except:
-        return None
 
 # ==========================
 # MAIN
@@ -223,17 +164,30 @@ stocks_all = get_all_nse_stocks()
 shortlist = []
 
 # ==========================
-# STRICT
+# STRICT (SEQUENTIAL)
 # ==========================
 print("\n🔍 Running STRICT...\n")
 
-with ThreadPoolExecutor(max_workers=5) as executor:
-    futures = [executor.submit(process_stock_strict, s) for s in stocks_all]
+for stock in stocks_all:
 
-    for f in as_completed(futures):
-        res = f.result()
-        if res:
-            shortlist.append(res)
+    df = fetch_data(stock, "4mo")
+
+    if df.empty or len(df) < 80:
+        continue
+
+    df = remove_incomplete_candle(df)
+    df = clean_ohlcv(df)
+
+    if df.empty:
+        continue
+
+    latest = df.iloc[-1]
+
+    if latest['Close'] < 50 or latest['Volume'] < 200000:
+        continue
+
+    shortlist.append(stock)
+    print(f"✅ {stock}")
 
 print(f"\n📊 Strict: {len(shortlist)}")
 
@@ -244,26 +198,27 @@ if len(shortlist) == 0:
 
     print("\n⚠️ Running FALLBACK...\n")
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(process_stock_fallback, s) for s in stocks_all]
+    for stock in stocks_all:
 
-        for f in as_completed(futures):
-            res = f.result()
+        df = fetch_data(stock, "3mo")
 
-            if res:
-                shortlist.append(res)
+        if df.empty or len(df) < 30:
+            continue
 
-            if len(shortlist) >= 5:
-                break
+        df = clean_ohlcv(df)
 
-# FINAL SAFETY
-if len(shortlist) == 0:
-    print("\n🚨 Using TOP STOCKS fallback\n")
-    shortlist = stocks_all[:5]
+        if df.empty:
+            continue
+
+        latest = df.iloc[-1]
+
+        if latest['Close'] > 50:
+            shortlist.append(stock)
+
+        if len(shortlist) >= 5:
+            break
 
 print(f"\n📊 Final Shortlist: {len(shortlist)}")
-
-stocks = [s.replace(" (F)", "") for s in shortlist[:10]]
 
 # ==========================
 # CHARTS
@@ -272,32 +227,32 @@ valid_stocks = []
 
 print("\n📈 Generating charts...\n")
 
-for stock in stocks:
-    try:
-        data = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
+for stock in shortlist[:5]:
 
-        data = remove_incomplete_candle(data)
-        df = clean_ohlcv(data)
+    data = fetch_data(stock, "6mo")
 
-        if df.empty:
-            continue
+    if data.empty:
+        continue
 
-        weekly = resample_weekly(df)
+    data = remove_incomplete_candle(data)
+    df = clean_ohlcv(data)
 
-        if weekly.empty:
-            continue
+    if df.empty:
+        continue
 
-        d_path = f"{OUTPUT_DIR}/{stock}_Daily.png"
-        w_path = f"{OUTPUT_DIR}/{stock}_Weekly.png"
+    weekly = resample_weekly(df)
 
-        mpf.plot(df, type='candle', volume=True, savefig=d_path)
-        mpf.plot(weekly, type='candle', volume=True, savefig=w_path)
+    if weekly.empty:
+        continue
 
-        valid_stocks.append(stock)
-        print(f"✅ {stock}")
+    d_path = f"{OUTPUT_DIR}/{stock}_Daily.png"
+    w_path = f"{OUTPUT_DIR}/{stock}_Weekly.png"
 
-    except Exception as e:
-        print(f"⚠️ {stock}: {e}")
+    mpf.plot(df, type='candle', volume=True, savefig=d_path)
+    mpf.plot(weekly, type='candle', volume=True, savefig=w_path)
+
+    valid_stocks.append(stock)
+    print(f"✅ {stock}")
 
 # ==========================
 # TELEGRAM
@@ -309,16 +264,11 @@ def send_msg(txt):
     )
 
 if not valid_stocks:
-    send_msg("⚠️ No valid charts generated today")
-
-    # GitHub artifact fix
-    with open(f"{OUTPUT_DIR}/empty.txt", "w") as f:
-        f.write("No charts")
-
+    send_msg("⚠️ No valid charts today")
     exit()
 
 msg = "📊 Daily Breakout Report\n\n"
-msg += "\n".join(valid_stocks[:5])
+msg += "\n".join(valid_stocks)
 
 send_msg(msg)
 
