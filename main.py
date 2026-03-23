@@ -148,36 +148,53 @@ for stock in STOCK_UNIVERSE:
 print(f"\n📊 Strict Shortlist: {len(shortlist)}")
 
 # ==========================
-# 🔁 FALLBACK
+# 🔁 FALLBACK (FIXED + RELIABLE)
 # ==========================
 if len(shortlist) == 0:
+
     print("\n⚠️ Running fallback...\n")
 
     for stock in STOCK_UNIVERSE:
+
         try:
-            df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
+            df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
+
+            if df is None or df.empty or len(df) < 30:
+                continue
+
             df = remove_incomplete_candle(df)
+
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df = df[['Open','High','Low','Close','Volume']].dropna()
 
             if df.empty:
                 continue
 
-            df = df[['Open','High','Low','Close','Volume']].dropna()
             latest = df.iloc[-1]
 
+            # ✅ ONLY BASIC FILTERS (RELAXED)
             if latest['Close'] < 50:
                 continue
 
-            df['EMA50'] = df['Close'].ewm(span=50).mean()
-            if latest['Close'] < df['EMA50'].iloc[-1]:
+            # 👉 REMOVE EMA restriction (IMPORTANT FIX)
+
+            # ✅ SIMPLE MOMENTUM
+            recent_high = df['High'].tail(20).max()
+
+            if latest['Close'] < 0.8 * recent_high:
                 continue
 
             shortlist.append(f"{stock} (F)")
             print(f"🔁 {stock}")
 
+            # ✅ LIMIT OUTPUT
             if len(shortlist) >= 5:
                 break
 
-        except:
+        except Exception as e:
+            print(f"⚠️ Error fallback {stock}: {e}")
             continue
 
 print(f"\n📊 Final Shortlist: {len(shortlist)}")
@@ -254,44 +271,46 @@ for stock in stocks:
 doc.build(elements)
 
 print("📄 PDF ready")
+# ==========================
+# 🚀 MOCK GPT (TEST MODE)
+# ==========================
+print("\n🧪 Using MOCK GPT...\n")
+
+# Split shortlist
+clean_stocks = [s.replace(" (F)", "") for s in shortlist]
+
+buy = clean_stocks[:2]
+watch = clean_stocks[2:5]
+avoid = []
+
+# Create mock response text (for logs)
+mock_response = "MOCK GPT OUTPUT\n\n"
+
+if buy:
+    mock_response += "Top Picks:\n"
+    for s in buy:
+        mock_response += f"{s} → Score 12 (BUY)\n"
+
+if watch:
+    mock_response += "\nWatchlist:\n"
+    for s in watch:
+        mock_response += f"{s} → Score 9 (WATCH)\n"
+
+print(mock_response)
 
 # ==========================
-# GPT
-# ==========================
-print("\n🚀 Sending to GPT...\n")
-
-file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
-
-PROMPT = """Analyze charts using breakout-base strategy.
-
-STRICT:
-- Score out of 14
-- No base → no trade
-
-Output:
-Final Picks with reasoning
-"""
-
-response = client.responses.create(
-    model="gpt-4.1-mini",
-    input=[{
-        "role": "user",
-        "content": [
-            {"type": "input_text", "text": PROMPT},
-            {"type": "input_file", "file_id": file.id}
-        ]
-    }]
-)
-
-# ==========================
-# TELEGRAM CLEAN FORMAT
+# 📲 TELEGRAM (CLEAN FORMAT)
 # ==========================
 print("\n📲 Sending Telegram...\n")
 
 def send_message(text):
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+        data={
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown"
+        }
     )
 
 def send_document(path):
@@ -302,38 +321,32 @@ def send_document(path):
             data={"chat_id": CHAT_ID}
         )
 
-def parse_output(text):
-    buy, watch, avoid = [], [], []
-
-    for line in text.split("\n"):
-        if "Score" in line:
-            if "Score 11" in line or "Score 12" in line:
-                buy.append(line.split()[0])
-            elif "Score 8" in line or "Score 9" in line:
-                watch.append(line.split()[0])
-            else:
-                avoid.append(line.split()[0])
-
-    return buy, watch, avoid
-
-buy, watch, avoid = parse_output(response.output_text)
-
+# ==========================
+# 🧠 BUILD CLEAN MESSAGE
+# ==========================
 msg = "📊 *Daily Breakout Report*\n\n"
 
+# BUY
 if buy:
     msg += "🔥 *Top Picks*\n"
-    msg += "\n".join([f"• {s}" for s in buy[:2]]) + "\n\n"
+    for s in buy:
+        msg += f"• {s}\n"
+    msg += "\n"
 
+# WATCH
 if watch:
     msg += "⚠️ *Watchlist*\n"
-    msg += "\n".join([f"• {s}" for s in watch[:3]]) + "\n\n"
+    for s in watch:
+        msg += f"• {s}\n"
+    msg += "\n"
 
-if avoid:
-    msg += "❌ *Avoid*\n"
-    msg += "\n".join([f"• {s}" for s in avoid[:3]])
+# NO TRADE CASE
+if not buy and not watch:
+    msg += "❌ No valid setups today\n"
 
+# SEND
 send_message(msg)
 send_document(pdf_path)
 
 print("✅ Telegram sent!")
-print("\n🎉 SYSTEM COMPLETE")
+print("\n🎉 SYSTEM COMPLETE (MOCK MODE)")
