@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM: NSE → SCREENER → PDF → GPT → TELEGRAM
+# 🚀 ELITE SYSTEM: NSE → SCREENER → PDF → GPT → TELEGRAM
 # ==============================================
 
 import os
@@ -8,7 +8,8 @@ import yfinance as yf
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime
+import pytz
 import requests
 from openai import OpenAI
 
@@ -21,9 +22,31 @@ from reportlab.lib.styles import getSampleStyleSheet
 # 🔑 API
 # ==========================
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# ==========================
+# 🧠 REMOVE INCOMPLETE CANDLE
+# ==========================
+def remove_incomplete_candle(df):
+
+    if df is None or df.empty:
+        return df
+
+    india = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(india)
+
+    last_date = df.index[-1].date()
+
+    if last_date != now.date():
+        return df
+
+    market_close = dtime(15, 30)
+
+    if now.time() < market_close:
+        return df.iloc[:-1]
+
+    return df
 
 # ==========================
 # FETCH NSE STOCKS
@@ -60,51 +83,86 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"📁 Run folder: {OUTPUT_DIR}")
 
 # ==========================
-# SCREENER
+# 🚀 ELITE SCREENER
 # ==========================
 STOCK_UNIVERSE = get_all_nse_stocks()
 print(f"📊 Total stocks: {len(STOCK_UNIVERSE)}")
 
 shortlist = []
 
-print("\n🔍 Running Screener...\n")
+print("\n🔍 Running ELITE Screener...\n")
 
 for stock in STOCK_UNIVERSE:
 
     try:
-        df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
+        df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
+        df = remove_incomplete_candle(df)
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        if df.empty or len(df) < 50:
+        if df.empty or len(df) < 80:
             continue
 
         df = df[['Open','High','Low','Close','Volume']].dropna()
         latest = df.iloc[-1]
 
+        # Liquidity
         if latest['Close'] < 50 or latest['Volume'] < 200000:
             continue
 
+        # Trend
         df['EMA50'] = df['Close'].ewm(span=50).mean()
         df['EMA200'] = df['Close'].ewm(span=200).mean()
-        df['Vol_Avg'] = df['Volume'].rolling(20).mean()
+
+        if not (latest['Close'] > df['EMA50'].iloc[-1] > df['EMA200'].iloc[-1]):
+            continue
+
+        # Base
+        base = df.tail(25)
+        base_high = base['High'].max()
+        base_low = base['Low'].min()
+
+        range_pct = (base_high - base_low) / base_low * 100
+        if range_pct > 18:
+            continue
+
+        if len(base) < 15:
+            continue
+
+        # Volume (IFP)
+        base_vol = base['Volume'].mean()
+        prior_vol = df['Volume'].tail(60).mean()
+
+        vol_dry = base_vol < prior_vol * 0.8
+        vol_expand = latest['Volume'] > base['Volume'].tail(5).mean()
+
+        if not (vol_dry and vol_expand):
+            continue
+
+        # Breakout proximity
         df['High_20'] = df['High'].rolling(20).max()
+        if latest['Close'] < 0.9 * df['High_20'].iloc[-1]:
+            continue
 
-        latest = df.iloc[-1]
+        # Relative strength
+        df['Return_20'] = df['Close'].pct_change(20)
+        if df['Return_20'].iloc[-1] < 0:
+            continue
 
-        cond1 = latest['Close'] > latest['EMA50'] > latest['EMA200']
-        cond2 = latest['Close'] >= 0.90 * latest['High_20']
-        cond3 = latest['Volume'] >= 0.8 * latest['Vol_Avg']
+        # Avoid extended
+        if (latest['Close'] / base_low) > 1.25:
+            continue
 
-        recent = df.tail(20)
-        range_pct = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min() * 100
+        # Pullback quality
+        pullback = (base_high - latest['Close']) / base_high
+        if pullback > 0.15:
+            continue
 
-        if cond1 and cond2 and cond3 and range_pct < 15:
-            shortlist.append(stock)
-            print(f"✅ {stock}")
+        shortlist.append(stock)
+        print(f"✅ {stock}")
 
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     except:
         continue
@@ -177,6 +235,7 @@ print("\n📈 Generating charts...\n")
 for stock in stocks:
     try:
         data = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
+        data = remove_incomplete_candle(data)
 
         df_daily = prepare_data(data)
         plot_chart(df_daily, stock, "Daily")
@@ -193,7 +252,7 @@ for stock in stocks:
 print("✅ Charts ready")
 
 # ==========================
-# CREATE PDF
+# PDF
 # ==========================
 print("\n📄 Creating PDF...\n")
 
@@ -225,22 +284,24 @@ doc.build(elements)
 print(f"📄 PDF created: {pdf_path}")
 
 # ==========================
-# GPT (PDF INPUT)
+# GPT
 # ==========================
 print("\n🚀 Sending PDF to GPT...\n")
 
 file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
 
-PROMPT = """Analyze charts using breakout-base strategy.
+PROMPT = """Analyze ONLY the charts provided using breakout-base strategy.
 
-Give:
+Strict rules:
+- Focus on base quality
+- Volume confirmation
+- Tight structure
+- Give only high probability trades
+
+Output:
 1. Summary Table
 2. Execution Table
 3. Final Picks (Top 2)
-
-Rules:
-- Prefer tight base
-- No pattern → no buy
 """
 
 response = client.responses.create(
@@ -256,10 +317,6 @@ response = client.responses.create(
 
 print("\n📊 GPT OUTPUT:\n")
 print(response.output_text)
-
-# SAVE
-with open(f"{OUTPUT_DIR}/gpt_output.txt", "w") as f:
-    f.write(response.output_text)
 
 # ==========================
 # TELEGRAM
@@ -280,7 +337,6 @@ def send_document(file_path):
     with open(file_path, "rb") as f:
         requests.post(url, files={"document": f}, data={"chat_id": CHAT_ID})
 
-# Cleaner message (only final picks)
 msg = "📊 *Daily Breakout Report*\n\n"
 
 if "Final Picks" in response.output_text:
@@ -293,4 +349,4 @@ send_document(pdf_path)
 
 print("✅ Telegram sent!")
 
-print("\n🎉 SYSTEM COMPLETE — FULLY AUTOMATED")
+print("\n🎉 ELITE SYSTEM RUN COMPLETE")
