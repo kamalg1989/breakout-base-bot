@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT BASE SYSTEM (FINAL WITH STRICT GPT)
+# 🚀 BREAKOUT BASE SYSTEM (FINAL STABLE VERSION)
 # ==============================================
 
 import os
@@ -33,60 +33,36 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 GPT_PROMPT = """
 You are a professional breakout-base trading system.
 
-You MUST strictly follow this system:
+Follow STRICTLY:
 
-SYSTEM FLOW:
-Chartink → Focus → Trade → Base → Entry Pattern → Execute
+STEP 1 — WEEKLY
+Trend + Stage (Base1/2/3/Late)
 
-STEP 1 — WEEKLY ANALYSIS
-Trend: Uptrend / Sideways / Downtrend
-Stage: Base 1 / Base 2 / Base 3 / Late
-Prefer Base 1 & Base 2. Avoid Late.
+STEP 2 — BASE SCORE (0–10)
+Trend, Tightness, Volume, Pullback, EMA
 
-STEP 2 — BASE SCORING (0–10)
-Trend (0–2)
-Structure (0–3)
-Volume (0–2)
-Pullback (0–2)
-EMA behavior (0–1)
-
-STEP 3 — VOLUME
-Strong=3, Moderate=2, Weak=1
-
-STEP 4 — SETUP
-Breakout=3, Retest=3, Pullback=2
-
+STEP 3 — VOLUME (1–3)
+STEP 4 — SETUP (0–3)
 STEP 5 — PATTERN (MANDATORY)
-Trend Bar=3, Pin Bar=2, HH-HL=2, Inside Bar=2
 If no pattern → DO NOT BUY
 
-STEP 6 — ENTRY
-Entry above pattern high
-Stop below pattern/base
+STEP 6 — ENTRY & SL
 
-STEP 7 — FINAL SCORE
-Score = Base + Stage + Volume + Setup + Pattern (Max 14)
+STEP 7 — FINAL SCORE (max 14)
 
 STEP 8 — DECISION
 ≥11 BUY
 8–10 WATCH
 ≤7 AVOID
 
-OUTPUT FORMAT:
+OUTPUT:
 
 📊 Summary Table
-Stock | Trend | Stage | Base | Volume | Setup | Pattern | Score | Decision
-
 🎯 Execution Table
-Stock | Action | Entry | Stop Loss | Setup | Pattern | Score
-
 ✅ Final Picks
-Primary:
-Secondary:
-
 ⚠️ Notes
 
-IMPORTANT:
+RULES:
 - No base → reject
 - No pattern → DO NOT BUY
 - Max 2–3 trades
@@ -107,7 +83,7 @@ def fetch_data(stock, period):
     return pd.DataFrame()
 
 # ==========================
-# CLEAN DATA
+# CLEAN
 # ==========================
 def clean_ohlcv(df):
     if df.empty:
@@ -117,6 +93,7 @@ def clean_ohlcv(df):
         df.columns = df.columns.get_level_values(0)
 
     cols = ['Open','High','Low','Close','Volume']
+
     if not all(c in df.columns for c in cols):
         return pd.DataFrame()
 
@@ -152,15 +129,31 @@ def resample_weekly(df):
     }).dropna()
 
 # ==========================
-# NSE STOCKS
+# NSE STOCKS (FIXED)
 # ==========================
 def get_all_nse_stocks():
+
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
         data = requests.get(url, headers=headers).json()
-        return [d['symbol'] + ".NS" for d in data['data']]
+
+        stocks = []
+
+        for d in data['data']:
+            symbol = d['symbol']
+
+            if "NIFTY" in symbol:
+                continue
+
+            if not re.match(r'^[A-Z&]+$', symbol):
+                continue
+
+            stocks.append(symbol + ".NS")
+
+        return stocks
+
     except:
         return []
 
@@ -190,6 +183,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 stocks = get_all_nse_stocks()
 
+print(f"📊 Total stocks: {len(stocks)}")
+
 shortlist = []
 
 print("🔍 Screening...")
@@ -201,8 +196,7 @@ for stock in stocks:
     if df.empty or len(df) < 60:
         continue
 
-    df = remove_incomplete_candle(df)
-    df = clean_ohlcv(df)
+    df = clean_ohlcv(remove_incomplete_candle(df))
 
     if df.empty:
         continue
@@ -243,22 +237,22 @@ for stock in shortlist:
 
     weekly = resample_weekly(df)
 
-    d = f"{OUTPUT_DIR}/{stock}_D.png"
-    w = f"{OUTPUT_DIR}/{stock}_W.png"
+    d_path = f"{OUTPUT_DIR}/{stock}_D.png"
+    w_path = f"{OUTPUT_DIR}/{stock}_W.png"
 
-    mpf.plot(df, type='candle', volume=True, savefig=d)
-    mpf.plot(weekly, type='candle', volume=True, savefig=w)
+    mpf.plot(df, type='candle', volume=True, savefig=d_path)
+    mpf.plot(weekly, type='candle', volume=True, savefig=w_path)
 
-    elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
+    elements.append(Paragraph(f"<b>STOCK: {stock}</b>", styles['Heading2']))
     elements.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
     elements.append(Spacer(1, 10))
 
     elements.append(Paragraph("DAILY", styles['Heading3']))
-    elements.append(Image(d, width=450, height=250))
+    elements.append(Image(d_path, width=450, height=250))
     elements.append(Spacer(1, 10))
 
     elements.append(Paragraph("WEEKLY", styles['Heading3']))
-    elements.append(Image(w, width=450, height=250))
+    elements.append(Image(w_path, width=450, height=250))
     elements.append(Spacer(1, 20))
 
 doc.build(elements)
@@ -266,34 +260,44 @@ doc.build(elements)
 print("📄 PDF Ready")
 
 # ==========================
-# GPT
+# GPT (FIXED FILE UPLOAD)
 # ==========================
 print("🚀 GPT Analysis...")
 
-with open(pdf_path, "rb") as f:
-    response = client.responses.create(
-        model="gpt-5.3",
-        input=[{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": GPT_PROMPT},
-                {"type": "input_file", "file": f}
-            ]
-        }]
-    )
+uploaded = client.files.create(
+    file=open(pdf_path, "rb"),
+    purpose="assistants"
+)
+
+response = client.responses.create(
+    model="gpt-5.3",
+    input=[{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": GPT_PROMPT},
+            {"type": "input_file", "file_id": uploaded.id}
+        ]
+    }]
+)
 
 output = response.output_text
 
 print(output)
 
 # ==========================
-# TELEGRAM (SPLIT)
+# TELEGRAM SPLIT
 # ==========================
-parts = output.split("📊 Summary Table")
+sections = [
+    "📊 Summary Table",
+    "🎯 Execution Table",
+    "✅ Final Picks",
+    "⚠️ Notes"
+]
 
-for p in parts:
-    if p.strip():
-        send_msg(p.strip())
+for section in sections:
+    if section in output:
+        part = output.split(section)[1].split("📊" if section != "📊 Summary Table" else "🎯")[0]
+        send_msg(section + part)
 
 send_doc(pdf_path)
 
