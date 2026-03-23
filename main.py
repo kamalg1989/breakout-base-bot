@@ -1,6 +1,5 @@
 # ==============================================
-# 🚀 ELITE SYSTEM (FINAL VERSION)
-# NSE → SCREENER → PDF → GPT → CLEAN TELEGRAM
+# 🚀 ELITE SYSTEM (FINAL PRODUCTION VERSION)
 # ==============================================
 
 import os
@@ -11,7 +10,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, time as dtime
 import pytz
 import requests
-from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # PDF
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
@@ -19,16 +18,13 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ==========================
-# 🔧 CONFIG
+# CONFIG
 # ==========================
-DEBUG = False
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ==========================
-# 🧠 REMOVE INCOMPLETE CANDLE
+# REMOVE INCOMPLETE CANDLE
 # ==========================
 def remove_incomplete_candle(df):
     if df is None or df.empty:
@@ -48,29 +44,105 @@ def remove_incomplete_candle(df):
     return df
 
 # ==========================
-# FETCH NSE STOCKS
+# NSE STOCKS
 # ==========================
 def get_all_nse_stocks():
     indices = ["NIFTY 500", "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250"]
     headers = {"User-Agent": "Mozilla/5.0"}
-
     stocks = set()
 
     for index in indices:
-        url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
         try:
+            url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
             data = requests.get(url, headers=headers).json()
             for item in data['data']:
-                symbol = item['symbol']
-                if symbol.isalpha():
-                    stocks.add(symbol + ".NS")
+                if item['symbol'].isalpha():
+                    stocks.add(item['symbol'] + ".NS")
         except:
             continue
 
     return list(stocks)
 
 # ==========================
-# CREATE FOLDER
+# STRICT FUNCTION (PARALLEL)
+# ==========================
+def process_stock_strict(stock):
+    try:
+        df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
+        df = remove_incomplete_candle(df)
+
+        if df is None or df.empty or len(df) < 80:
+            return None
+
+        df = df[['Open','High','Low','Close','Volume']].dropna()
+        latest = df.iloc[-1]
+
+        if latest['Close'] < 50 or latest['Volume'] < 200000:
+            return None
+
+        df['EMA50'] = df['Close'].ewm(span=50).mean()
+        df['EMA200'] = df['Close'].ewm(span=200).mean()
+
+        if not (latest['Close'] > df['EMA50'].iloc[-1] > df['EMA200'].iloc[-1]):
+            return None
+
+        base = df.tail(25)
+        base_high = base['High'].max()
+        base_low = base['Low'].min()
+
+        if (base_high - base_low) / base_low * 100 > 18:
+            return None
+
+        base_vol = base['Volume'].mean()
+        prior_vol = df['Volume'].tail(60).mean()
+
+        if not (base_vol < prior_vol * 0.8 and latest['Volume'] > base['Volume'].tail(5).mean()):
+            return None
+
+        df['High_20'] = df['High'].rolling(20).max()
+        if latest['Close'] < 0.9 * df['High_20'].iloc[-1]:
+            return None
+
+        df['Return_20'] = df['Close'].pct_change(20)
+        if df['Return_20'].iloc[-1] < 0:
+            return None
+
+        if (latest['Close'] / base_low) > 1.25:
+            return None
+
+        return stock
+
+    except:
+        return None
+
+# ==========================
+# FALLBACK FUNCTION
+# ==========================
+def process_stock_fallback(stock):
+    try:
+        df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
+
+        if df is None or df.empty or len(df) < 30:
+            return None
+
+        df = remove_incomplete_candle(df)
+        df = df[['Open','High','Low','Close','Volume']].dropna()
+
+        latest = df.iloc[-1]
+
+        if latest['Close'] < 50:
+            return None
+
+        if latest['Close'] < 0.8 * df['High'].tail(20).max():
+            return None
+
+        return stock + " (F)"
+
+    except:
+        return None
+
+# ==========================
+# RUN
 # ==========================
 BASE_DIR = "charts"
 os.makedirs(BASE_DIR, exist_ok=True)
@@ -81,121 +153,45 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print(f"📁 Run folder: {OUTPUT_DIR}")
 
-# ==========================
-# 🚀 SCREENER (STRICT)
-# ==========================
-STOCK_UNIVERSE = get_all_nse_stocks()
-print(f"📊 Total stocks: {len(STOCK_UNIVERSE)}")
+stocks_all = get_all_nse_stocks()
+print(f"📊 Total stocks: {len(stocks_all)}")
 
+# ==========================
+# STRICT PARALLEL
+# ==========================
 shortlist = []
 
-print("\n🔍 Running ELITE Screener...\n")
+print("\n🔍 Running STRICT (Parallel)...\n")
 
-for stock in STOCK_UNIVERSE:
-    try:
-        df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
-        df = remove_incomplete_candle(df)
+with ThreadPoolExecutor(max_workers=10) as executor:
+    futures = [executor.submit(process_stock_strict, s) for s in stocks_all]
 
-        if df.empty or len(df) < 80:
-            continue
+    for f in as_completed(futures):
+        res = f.result()
+        if res:
+            shortlist.append(res)
+            print(f"✅ {res}")
 
-        df = df[['Open','High','Low','Close','Volume']].dropna()
-        latest = df.iloc[-1]
-
-        if latest['Close'] < 50 or latest['Volume'] < 200000:
-            continue
-
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
-        df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-        if not (latest['Close'] > df['EMA50'].iloc[-1] > df['EMA200'].iloc[-1]):
-            continue
-
-        base = df.tail(25)
-        base_high = base['High'].max()
-        base_low = base['Low'].min()
-
-        range_pct = (base_high - base_low) / base_low * 100
-        if range_pct > 18:
-            continue
-
-        base_vol = base['Volume'].mean()
-        prior_vol = df['Volume'].tail(60).mean()
-
-        vol_dry = base_vol < prior_vol * 0.8
-        vol_expand = latest['Volume'] > base['Volume'].tail(5).mean()
-
-        if not (vol_dry and vol_expand):
-            continue
-
-        df['High_20'] = df['High'].rolling(20).max()
-        if latest['Close'] < 0.9 * df['High_20'].iloc[-1]:
-            continue
-
-        df['Return_20'] = df['Close'].pct_change(20)
-        if df['Return_20'].iloc[-1] < 0:
-            continue
-
-        if (latest['Close'] / base_low) > 1.25:
-            continue
-
-        shortlist.append(stock)
-        print(f"✅ {stock}")
-
-    except:
-        continue
-
-print(f"\n📊 Strict Shortlist: {len(shortlist)}")
+print(f"\n📊 Strict: {len(shortlist)}")
 
 # ==========================
-# 🔁 FALLBACK (FIXED + RELIABLE)
+# FALLBACK
 # ==========================
 if len(shortlist) == 0:
 
-    print("\n⚠️ Running fallback...\n")
+    print("\n⚠️ Running FALLBACK...\n")
 
-    for stock in STOCK_UNIVERSE:
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(process_stock_fallback, s) for s in stocks_all]
 
-        try:
-            df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
+        for f in as_completed(futures):
+            res = f.result()
+            if res:
+                shortlist.append(res)
+                print(f"🔁 {res}")
 
-            if df is None or df.empty or len(df) < 30:
-                continue
-
-            df = remove_incomplete_candle(df)
-
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            df = df[['Open','High','Low','Close','Volume']].dropna()
-
-            if df.empty:
-                continue
-
-            latest = df.iloc[-1]
-
-            # ✅ ONLY BASIC FILTERS (RELAXED)
-            if latest['Close'] < 50:
-                continue
-
-            # 👉 REMOVE EMA restriction (IMPORTANT FIX)
-
-            # ✅ SIMPLE MOMENTUM
-            recent_high = df['High'].tail(20).max()
-
-            if latest['Close'] < 0.8 * recent_high:
-                continue
-
-            shortlist.append(f"{stock} (F)")
-            print(f"🔁 {stock}")
-
-            # ✅ LIMIT OUTPUT
             if len(shortlist) >= 5:
                 break
-
-        except Exception as e:
-            print(f"⚠️ Error fallback {stock}: {e}")
-            continue
 
 print(f"\n📊 Final Shortlist: {len(shortlist)}")
 
@@ -206,27 +202,14 @@ if not stocks:
     exit()
 
 # ==========================
-# PREP
+# CHART GENERATION (SAFE)
 # ==========================
-def prepare_data(df):
+def prepare(df):
     df = df[['Open','High','Low','Close','Volume']].dropna()
-
-    df['EMA10'] = df['Close'].ewm(span=10).mean()
-    df['EMA21'] = df['Close'].ewm(span=21).mean()
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
-
     return df
 
-def resample_weekly(df):
-    return df.resample('W').agg({
-        'Open':'first','High':'max','Low':'min',
-        'Close':'last','Volume':'sum'
-    }).dropna()
+valid_stocks = []
 
-# ==========================
-# CHARTS
-# ==========================
 print("\n📈 Generating charts...\n")
 
 for stock in stocks:
@@ -234,19 +217,33 @@ for stock in stocks:
         data = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
         data = remove_incomplete_candle(data)
 
-        df_daily = prepare_data(data)
-        df_weekly = prepare_data(resample_weekly(data))
+        if data is None or data.empty:
+            continue
 
-        mpf.plot(df_daily, type='candle', volume=True,
-                 savefig=f"{OUTPUT_DIR}/{stock}_Daily.png")
+        df_d = prepare(data)
+        df_w = prepare(data.resample('W').last())
 
-        mpf.plot(df_weekly, type='candle', volume=True,
-                 savefig=f"{OUTPUT_DIR}/{stock}_Weekly.png")
+        if df_d.empty or df_w.empty:
+            continue
 
-    except:
-        continue
+        d_path = f"{OUTPUT_DIR}/{stock}_Daily.png"
+        w_path = f"{OUTPUT_DIR}/{stock}_Weekly.png"
 
-print("✅ Charts ready")
+        mpf.plot(df_d, type='candle', volume=True, savefig=d_path)
+        mpf.plot(df_w, type='candle', volume=True, savefig=w_path)
+
+        if os.path.exists(d_path) and os.path.exists(w_path):
+            valid_stocks.append(stock)
+            print(f"✅ {stock}")
+
+    except Exception as e:
+        print(f"⚠️ {stock}: {e}")
+
+print(f"\n📊 Valid charts: {len(valid_stocks)}")
+
+if not valid_stocks:
+    print("❌ No valid charts")
+    exit()
 
 # ==========================
 # PDF
@@ -259,61 +256,41 @@ styles = getSampleStyleSheet()
 
 elements = []
 
-for stock in stocks:
+for stock in valid_stocks:
+    d = f"{OUTPUT_DIR}/{stock}_Daily.png"
+    w = f"{OUTPUT_DIR}/{stock}_Weekly.png"
+
+    if not os.path.exists(d) or not os.path.exists(w):
+        continue
+
     elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
     elements.append(Spacer(1, 10))
-
-    elements.append(Image(f"{OUTPUT_DIR}/{stock}_Daily.png", width=500, height=280))
+    elements.append(Image(d, width=500, height=280))
     elements.append(Spacer(1, 10))
-    elements.append(Image(f"{OUTPUT_DIR}/{stock}_Weekly.png", width=500, height=280))
+    elements.append(Image(w, width=500, height=280))
     elements.append(Spacer(1, 20))
 
 doc.build(elements)
-
 print("📄 PDF ready")
-# ==========================
-# 🚀 MOCK GPT (TEST MODE)
-# ==========================
-print("\n🧪 Using MOCK GPT...\n")
-
-# Split shortlist
-clean_stocks = [s.replace(" (F)", "") for s in shortlist]
-
-buy = clean_stocks[:2]
-watch = clean_stocks[2:5]
-avoid = []
-
-# Create mock response text (for logs)
-mock_response = "MOCK GPT OUTPUT\n\n"
-
-if buy:
-    mock_response += "Top Picks:\n"
-    for s in buy:
-        mock_response += f"{s} → Score 12 (BUY)\n"
-
-if watch:
-    mock_response += "\nWatchlist:\n"
-    for s in watch:
-        mock_response += f"{s} → Score 9 (WATCH)\n"
-
-print(mock_response)
 
 # ==========================
-# 📲 TELEGRAM (CLEAN FORMAT)
+# MOCK GPT
 # ==========================
-print("\n📲 Sending Telegram...\n")
+print("\n🧪 MOCK GPT\n")
 
-def send_message(text):
+buy = valid_stocks[:2]
+watch = valid_stocks[2:5]
+
+# ==========================
+# TELEGRAM
+# ==========================
+def send_msg(txt):
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
+        data={"chat_id": CHAT_ID, "text": txt, "parse_mode": "Markdown"}
     )
 
-def send_document(path):
+def send_doc(path):
     with open(path, "rb") as f:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
@@ -321,32 +298,16 @@ def send_document(path):
             data={"chat_id": CHAT_ID}
         )
 
-# ==========================
-# 🧠 BUILD CLEAN MESSAGE
-# ==========================
 msg = "📊 *Daily Breakout Report*\n\n"
 
-# BUY
 if buy:
-    msg += "🔥 *Top Picks*\n"
-    for s in buy:
-        msg += f"• {s}\n"
-    msg += "\n"
+    msg += "🔥 *Top Picks*\n" + "\n".join([f"• {s}" for s in buy]) + "\n\n"
 
-# WATCH
 if watch:
-    msg += "⚠️ *Watchlist*\n"
-    for s in watch:
-        msg += f"• {s}\n"
-    msg += "\n"
+    msg += "⚠️ *Watchlist*\n" + "\n".join([f"• {s}" for s in watch])
 
-# NO TRADE CASE
-if not buy and not watch:
-    msg += "❌ No valid setups today\n"
+send_msg(msg)
+send_doc(pdf_path)
 
-# SEND
-send_message(msg)
-send_document(pdf_path)
-
-print("✅ Telegram sent!")
-print("\n🎉 SYSTEM COMPLETE (MOCK MODE)")
+print("✅ Telegram sent")
+print("\n🎉 SYSTEM COMPLETE")
