@@ -1,296 +1,300 @@
 # ==============================================
-# 🚀 FINAL SYSTEM: NSE → SCREENER → PDF → GPT → TELEGRAM
+# 🚀 BREAKOUT BASE SYSTEM (FINAL WITH STRICT GPT)
 # ==============================================
 
 import os
+import re
+import time
 import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
-import matplotlib.pyplot as plt
-import time
-from datetime import datetime
+from datetime import datetime, time as dtime
+import pytz
 import requests
-from openai import OpenAI
 
-# PDF
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 
-# ==========================
-# 🔑 API
-# ==========================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from openai import OpenAI
 
+# ==========================
+# CONFIG
+# ==========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ==========================
-# FETCH NSE STOCKS
+# STRICT GPT PROMPT
 # ==========================
-def get_all_nse_stocks():
-    indices = ["NIFTY 500", "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250"]
-    headers = {"User-Agent": "Mozilla/5.0"}
+GPT_PROMPT = """
+You are a professional breakout-base trading system.
 
-    stocks = set()
+You MUST strictly follow this system:
 
-    for index in indices:
-        url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
+SYSTEM FLOW:
+Chartink → Focus → Trade → Base → Entry Pattern → Execute
+
+STEP 1 — WEEKLY ANALYSIS
+Trend: Uptrend / Sideways / Downtrend
+Stage: Base 1 / Base 2 / Base 3 / Late
+Prefer Base 1 & Base 2. Avoid Late.
+
+STEP 2 — BASE SCORING (0–10)
+Trend (0–2)
+Structure (0–3)
+Volume (0–2)
+Pullback (0–2)
+EMA behavior (0–1)
+
+STEP 3 — VOLUME
+Strong=3, Moderate=2, Weak=1
+
+STEP 4 — SETUP
+Breakout=3, Retest=3, Pullback=2
+
+STEP 5 — PATTERN (MANDATORY)
+Trend Bar=3, Pin Bar=2, HH-HL=2, Inside Bar=2
+If no pattern → DO NOT BUY
+
+STEP 6 — ENTRY
+Entry above pattern high
+Stop below pattern/base
+
+STEP 7 — FINAL SCORE
+Score = Base + Stage + Volume + Setup + Pattern (Max 14)
+
+STEP 8 — DECISION
+≥11 BUY
+8–10 WATCH
+≤7 AVOID
+
+OUTPUT FORMAT:
+
+📊 Summary Table
+Stock | Trend | Stage | Base | Volume | Setup | Pattern | Score | Decision
+
+🎯 Execution Table
+Stock | Action | Entry | Stop Loss | Setup | Pattern | Score
+
+✅ Final Picks
+Primary:
+Secondary:
+
+⚠️ Notes
+
+IMPORTANT:
+- No base → reject
+- No pattern → DO NOT BUY
+- Max 2–3 trades
+"""
+
+# ==========================
+# SAFE FETCH
+# ==========================
+def fetch_data(stock, period):
+    for _ in range(3):
         try:
-            data = requests.get(url, headers=headers).json()
-            for item in data['data']:
-                symbol = item['symbol']
-                if symbol.isalpha():
-                    stocks.add(symbol + ".NS")
+            df = yf.Ticker(stock).history(period=period, auto_adjust=True)
+            if not df.empty:
+                return df
         except:
-            continue
-
-    return list(stocks)
-
-# ==========================
-# CREATE FOLDER
-# ==========================
-BASE_DIR = "charts"
-os.makedirs(BASE_DIR, exist_ok=True)
-
-timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-OUTPUT_DIR = os.path.join(BASE_DIR, f"run_{timestamp}")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-print(f"📁 Run folder: {OUTPUT_DIR}")
+            pass
+        time.sleep(0.5)
+    return pd.DataFrame()
 
 # ==========================
-# SCREENER
+# CLEAN DATA
 # ==========================
-STOCK_UNIVERSE = get_all_nse_stocks()
-print(f"📊 Total stocks: {len(STOCK_UNIVERSE)}")
-
-shortlist = []
-
-print("\n🔍 Running Screener...\n")
-
-for stock in STOCK_UNIVERSE:
-
-    try:
-        df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        if df.empty or len(df) < 50:
-            continue
-
-        df = df[['Open','High','Low','Close','Volume']].dropna()
-        latest = df.iloc[-1]
-
-        if latest['Close'] < 50 or latest['Volume'] < 200000:
-            continue
-
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
-        df['EMA200'] = df['Close'].ewm(span=200).mean()
-        df['Vol_Avg'] = df['Volume'].rolling(20).mean()
-        df['High_20'] = df['High'].rolling(20).max()
-
-        latest = df.iloc[-1]
-
-        cond1 = latest['Close'] > latest['EMA50'] > latest['EMA200']
-        cond2 = latest['Close'] >= 0.90 * latest['High_20']
-        cond3 = latest['Volume'] >= 0.8 * latest['Vol_Avg']
-
-        recent = df.tail(20)
-        range_pct = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min() * 100
-
-        if cond1 and cond2 and cond3 and range_pct < 15:
-            shortlist.append(stock)
-            print(f"✅ {stock}")
-
-        time.sleep(0.1)
-
-    except:
-        continue
-
-print(f"\n📊 Shortlisted: {len(shortlist)}")
-
-stocks = shortlist[:10]
-
-if not stocks:
-    print("❌ No stocks found")
-    exit()
-
-# ==========================
-# PREP
-# ==========================
-def prepare_data(df):
+def clean_ohlcv(df):
+    if df.empty:
+        return df
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    df = df[['Open','High','Low','Close','Volume']].dropna()
+    cols = ['Open','High','Low','Close','Volume']
+    if not all(c in df.columns for c in cols):
+        return pd.DataFrame()
 
-    df['EMA10'] = df['Close'].ewm(span=10).mean()
-    df['EMA21'] = df['Close'].ewm(span=21).mean()
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
+    df = df[cols].copy()
+
+    for c in cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    return df.dropna()
+
+# ==========================
+# REMOVE INCOMPLETE CANDLE
+# ==========================
+def remove_incomplete_candle(df):
+    india = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(india)
+
+    if df.index[-1].date() == now.date() and now.time() < dtime(15, 30):
+        return df.iloc[:-1]
 
     return df
 
+# ==========================
+# WEEKLY
+# ==========================
 def resample_weekly(df):
     return df.resample('W').agg({
-        'Open':'first','High':'max','Low':'min',
-        'Close':'last','Volume':'sum'
+        'Open':'first',
+        'High':'max',
+        'Low':'min',
+        'Close':'last',
+        'Volume':'sum'
     }).dropna()
 
 # ==========================
-# PLOT
+# NSE STOCKS
 # ==========================
-def plot_chart(df, stock, timeframe):
+def get_all_nse_stocks():
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    apds, labels = [], []
+    try:
+        data = requests.get(url, headers=headers).json()
+        return [d['symbol'] + ".NS" for d in data['data']]
+    except:
+        return []
 
-    for ema, color in zip(
-        ['EMA10','EMA21','EMA50','EMA200'],
-        ['purple','cyan','blue','orange']
-    ):
-        if df[ema].notna().sum() > 5:
-            apds.append(mpf.make_addplot(df[ema], color=color))
-            labels.append(ema)
-
-    filename = f"{OUTPUT_DIR}/{stock}_{timeframe}.png"
-
-    fig, axes = mpf.plot(
-        df, type='candle', style='yahoo',
-        volume=True, addplot=apds,
-        returnfig=True
+# ==========================
+# TELEGRAM
+# ==========================
+def send_msg(text):
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": text}
     )
 
-    if labels:
-        axes[0].legend(labels)
-
-    fig.savefig(filename)
-    plt.close(fig)
+def send_doc(path):
+    with open(path, "rb") as f:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+            files={"document": f},
+            data={"chat_id": CHAT_ID}
+        )
 
 # ==========================
-# GENERATE CHARTS
+# MAIN
 # ==========================
-print("\n📈 Generating charts...\n")
+date_str = datetime.now().strftime("%Y-%m-%d")
+OUTPUT_DIR = f"charts/run_{date_str}"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+stocks = get_all_nse_stocks()
+
+shortlist = []
+
+print("🔍 Screening...")
 
 for stock in stocks:
-    try:
-        data = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
 
-        df_daily = prepare_data(data)
-        plot_chart(df_daily, stock, "Daily")
+    df = fetch_data(stock, "3mo")
 
-        df_weekly = resample_weekly(data)
-        df_weekly = prepare_data(df_weekly)
-        plot_chart(df_weekly, stock, "Weekly")
-
-        time.sleep(0.1)
-
-    except:
+    if df.empty or len(df) < 60:
         continue
 
-print("✅ Charts ready")
+    df = remove_incomplete_candle(df)
+    df = clean_ohlcv(df)
+
+    if df.empty:
+        continue
+
+    latest = df.iloc[-1]
+
+    if latest['Close'] < 50 or latest['Volume'] < 200000:
+        continue
+
+    recent_high = df['High'].rolling(20).max().iloc[-1]
+
+    if latest['Close'] < 0.85 * recent_high:
+        continue
+
+    shortlist.append(stock)
+
+    if len(shortlist) >= 8:
+        break
+
+print(f"📊 Shortlist: {len(shortlist)}")
 
 # ==========================
-# CREATE PDF
+# PDF
 # ==========================
-print("\n📄 Creating PDF...\n")
-
-pdf_path = f"{OUTPUT_DIR}/charts.pdf"
-
+pdf_path = f"{OUTPUT_DIR}/breakout_report_{date_str}.pdf"
 doc = SimpleDocTemplate(pdf_path, pagesize=letter)
 styles = getSampleStyleSheet()
 
 elements = []
 
-for stock in stocks:
+for stock in shortlist:
+
+    data = fetch_data(stock, "6mo")
+    df = clean_ohlcv(remove_incomplete_candle(data))
+
+    if df.empty:
+        continue
+
+    weekly = resample_weekly(df)
+
+    d = f"{OUTPUT_DIR}/{stock}_D.png"
+    w = f"{OUTPUT_DIR}/{stock}_W.png"
+
+    mpf.plot(df, type='candle', volume=True, savefig=d)
+    mpf.plot(weekly, type='candle', volume=True, savefig=w)
 
     elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
+    elements.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
     elements.append(Spacer(1, 10))
 
-    daily = f"{OUTPUT_DIR}/{stock}_Daily.png"
-    weekly = f"{OUTPUT_DIR}/{stock}_Weekly.png"
+    elements.append(Paragraph("DAILY", styles['Heading3']))
+    elements.append(Image(d, width=450, height=250))
+    elements.append(Spacer(1, 10))
 
-    if os.path.exists(daily):
-        elements.append(Image(daily, width=500, height=280))
-        elements.append(Spacer(1, 10))
-
-    if os.path.exists(weekly):
-        elements.append(Image(weekly, width=500, height=280))
-        elements.append(Spacer(1, 20))
+    elements.append(Paragraph("WEEKLY", styles['Heading3']))
+    elements.append(Image(w, width=450, height=250))
+    elements.append(Spacer(1, 20))
 
 doc.build(elements)
 
-print(f"📄 PDF created: {pdf_path}")
+print("📄 PDF Ready")
 
 # ==========================
-# GPT (PDF INPUT)
+# GPT
 # ==========================
-print("\n🚀 Sending PDF to GPT...\n")
+print("🚀 GPT Analysis...")
 
-file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
+with open(pdf_path, "rb") as f:
+    response = client.responses.create(
+        model="gpt-5.3",
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": GPT_PROMPT},
+                {"type": "input_file", "file": f}
+            ]
+        }]
+    )
 
-PROMPT = """Analyze charts using breakout-base strategy.
+output = response.output_text
 
-Give:
-1. Summary Table
-2. Execution Table
-3. Final Picks (Top 2)
-
-Rules:
-- Prefer tight base
-- No pattern → no buy
-"""
-
-response = client.responses.create(
-    model="gpt-4.1-mini",
-    input=[{
-        "role": "user",
-        "content": [
-            {"type": "input_text", "text": PROMPT},
-            {"type": "input_file", "file_id": file.id}
-        ]
-    }]
-)
-
-print("\n📊 GPT OUTPUT:\n")
-print(response.output_text)
-
-# SAVE
-with open(f"{OUTPUT_DIR}/gpt_output.txt", "w") as f:
-    f.write(response.output_text)
+print(output)
 
 # ==========================
-# TELEGRAM
+# TELEGRAM (SPLIT)
 # ==========================
-print("\n📲 Sending to Telegram...\n")
+parts = output.split("📊 Summary Table")
 
-def send_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    requests.post(url, data=payload)
+for p in parts:
+    if p.strip():
+        send_msg(p.strip())
 
-def send_document(file_path):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    with open(file_path, "rb") as f:
-        requests.post(url, files={"document": f}, data={"chat_id": CHAT_ID})
+send_doc(pdf_path)
 
-# Cleaner message (only final picks)
-msg = "📊 *Daily Breakout Report*\n\n"
-
-if "Final Picks" in response.output_text:
-    msg += response.output_text.split("Final Picks")[-1][:1000]
-else:
-    msg += response.output_text[:1000]
-
-send_message(msg)
-send_document(pdf_path)
-
-print("✅ Telegram sent!")
-
-print("\n🎉 SYSTEM COMPLETE — FULLY AUTOMATED")
+print("✅ DONE")
