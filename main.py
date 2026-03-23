@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT BASE SYSTEM (FINAL PRO VERSION)
+# 🚀 BREAKOUT BASE SYSTEM (FINAL ELITE VERSION)
 # ==============================================
 
 import os
@@ -28,40 +28,44 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ==========================
-# GPT PROMPT (STRICT)
+# GPT PROMPT (FINAL)
 # ==========================
 GPT_PROMPT = """
 You are a professional breakout-base trading system.
 
-Follow STRICTLY:
+STRICTLY FOLLOW:
 
-STEP 1 — WEEKLY Trend & Stage
-STEP 2 — BASE SCORE (0–10)
-STEP 3 — VOLUME
-STEP 4 — SETUP
-STEP 5 — PATTERN (MANDATORY)
+1. Weekly trend + stage
+2. Base scoring (0–10)
+3. Volume strength
+4. Setup
+5. Pattern (MANDATORY)
 
 If no pattern → DO NOT BUY
 
-Final Score (max 14)
+Score = Base + Stage + Volume + Setup + Pattern (max 14)
 
 Decision:
 ≥11 BUY
 8–10 WATCH
 ≤7 AVOID
 
-OUTPUT SECTIONS:
+Also provide:
+
+• Market condition (overall)
+• Watchlist (future candidates)
+
+OUTPUT FORMAT:
 
 📊 Summary Table
 🎯 Execution Table
 ✅ Final Picks
-⚠️ Notes
-
-Max 2–3 stocks.
+⚠️ Market Context
+📌 Watchlist
 """
 
 # ==========================
-# FETCH
+# DATA
 # ==========================
 def fetch_data(stock, period):
     for _ in range(3):
@@ -74,9 +78,6 @@ def fetch_data(stock, period):
         time.sleep(0.5)
     return pd.DataFrame()
 
-# ==========================
-# CLEAN
-# ==========================
 def clean(df):
     if df.empty:
         return df
@@ -95,21 +96,14 @@ def clean(df):
 
     return df.dropna()
 
-# ==========================
-# REMOVE LIVE CANDLE
-# ==========================
 def remove_live(df):
     india = pytz.timezone("Asia/Kolkata")
     now = datetime.now(india)
 
     if df.index[-1].date() == now.date() and now.time() < dtime(15, 30):
         return df.iloc[:-1]
-
     return df
 
-# ==========================
-# WEEKLY
-# ==========================
 def weekly(df):
     return df.resample('W').agg({
         'Open':'first',
@@ -120,7 +114,7 @@ def weekly(df):
     }).dropna()
 
 # ==========================
-# CHART (EMA + COLORS)
+# CHART
 # ==========================
 def plot_chart(df, path):
 
@@ -130,15 +124,14 @@ def plot_chart(df, path):
     df['EMA200'] = df['Close'].ewm(span=200).mean()
 
     apds = [
-        mpf.make_addplot(df['EMA10'], color='red', width=1),
-        mpf.make_addplot(df['EMA21'], color='blue', width=1),
-        mpf.make_addplot(df['EMA50'], color='purple', width=1.2),
-        mpf.make_addplot(df['EMA200'], color='cyan', width=1.2),
+        mpf.make_addplot(df['EMA10'], color='red'),
+        mpf.make_addplot(df['EMA21'], color='blue'),
+        mpf.make_addplot(df['EMA50'], color='purple'),
+        mpf.make_addplot(df['EMA200'], color='cyan'),
     ]
 
     mc = mpf.make_marketcolors(
         up='green', down='red',
-        wick='inherit', edge='inherit',
         volume='inherit'
     )
 
@@ -189,14 +182,18 @@ def send_doc(path):
         )
 
 # ==========================
-# CARD FORMATTER (NEW)
+# FORMATTER (FINAL)
 # ==========================
-def format_card_style(output):
+def parse_and_send(output):
 
     lines = output.split("\n")
+
     stocks = []
+    market_context = ""
+    watchlist = ""
 
     for line in lines:
+
         if "|" in line and "Stock" not in line and "---" not in line:
             parts = [p.strip() for p in line.split("|") if p.strip()]
 
@@ -208,10 +205,20 @@ def format_card_style(output):
                     "volume": parts[4],
                     "setup": parts[5],
                     "pattern": parts[6],
+                    "score": parts[7],
                     "decision": parts[-1]
                 })
 
-    msg = "📊 BREAKOUT SUMMARY\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        if "Market" in line:
+            market_context += line + "\n"
+
+        if "Watchlist" in line or "Monitor" in line:
+            watchlist += line + "\n"
+
+    # ======================
+    # MESSAGE 1 — SUMMARY
+    # ======================
+    msg1 = "📊 BREAKOUT SUMMARY\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
     for s in stocks:
 
@@ -222,22 +229,70 @@ def format_card_style(output):
         else:
             emoji = "🔴"
 
-        msg += f"{emoji} {s['stock']} → {s['decision']}\n"
-        msg += f"Stage: {s['stage']}\n"
-        msg += f"Base: {s['base']}\n"
-        msg += f"Volume: {s['volume']}\n"
+        msg1 += f"{emoji} {s['stock']} → {s['decision']} (Score: {s['score']})\n"
+        msg1 += f"Stage: {s['stage']}\n"
+        msg1 += f"Base: {s['base']}\n"
+        msg1 += f"Volume: {s['volume']}\n"
 
         if s["setup"] != "None":
-            msg += f"Setup: {s['setup']}\n"
+            msg1 += f"Setup: {s['setup']}\n"
 
-        if s["pattern"] != "None":
-            msg += f"Pattern: {s['pattern']}\n"
-        else:
-            msg += f"Pattern: ❌ None\n"
+        msg1 += f"Pattern: {s['pattern'] if s['pattern']!='None' else '❌ None'}\n"
+        msg1 += "\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        msg += "\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    send_msg(msg1)
 
-    return msg
+    # ======================
+    # MESSAGE 2 — EXECUTION
+    # ======================
+    buys = [s for s in stocks if "BUY" in s["decision"]]
+
+    if not buys:
+        msg2 = """🎯 EXECUTION PLAN
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+❌ NO VALID SETUPS
+
+No stock meets breakout criteria
+
+👉 DO NOTHING
+
+━━━━━━━━━━━━━━━━━━━━━━"""
+    else:
+        msg2 = "🎯 EXECUTION PLAN\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for b in buys:
+            msg2 += f"🟢 {b['stock']}\nSetup: {b['setup']}\n\n"
+
+    msg2 += "\n⚠️ Risk: 1–2% per trade"
+    send_msg(msg2)
+
+    # ======================
+    # MESSAGE 3 — FINAL PICKS
+    # ======================
+    if not buys:
+        msg3 = """🔥 FINAL PICKS
+
+❌ NO TRADES
+
+Stay in CASH
+"""
+    else:
+        msg3 = "🔥 FINAL PICKS\n\n"
+        for b in buys[:2]:
+            msg3 += f"• {b['stock']} ⭐\n"
+
+    send_msg(msg3)
+
+    # ======================
+    # MESSAGE 4 — MARKET
+    # ======================
+    send_msg("⚠️ MARKET CONTEXT\n\n" + (market_context or "Market mixed / weak"))
+
+    # ======================
+    # MESSAGE 5 — WATCHLIST
+    # ======================
+    send_msg("📌 WATCHLIST\n\n" + (watchlist or "Monitor improving bases"))
 
 # ==========================
 # MAIN
@@ -253,8 +308,7 @@ print("🔍 Screening...")
 shortlist = []
 
 for s in stocks:
-    df = fetch_data(s, "3mo")
-    df = clean(remove_live(df))
+    df = clean(remove_live(fetch_data(s, "3mo")))
 
     if df.empty:
         continue
@@ -293,22 +347,17 @@ for s in shortlist:
 
     w = weekly(df)
 
-    d_path = f"{OUT}/{s}_D.png"
-    w_path = f"{OUT}/{s}_W.png"
+    d = f"{OUT}/{s}_D.png"
+    w_img = f"{OUT}/{s}_W.png"
 
-    plot_chart(df, d_path)
-    plot_chart(w, w_path)
+    plot_chart(df, d)
+    plot_chart(w, w_img)
 
     elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
-    elements.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
     elements.append(Spacer(1, 10))
-
-    elements.append(Paragraph("DAILY", styles['Heading3']))
-    elements.append(Image(d_path, width=450, height=250))
+    elements.append(Image(d, width=450, height=250))
     elements.append(Spacer(1, 10))
-
-    elements.append(Paragraph("WEEKLY", styles['Heading3']))
-    elements.append(Image(w_path, width=450, height=250))
+    elements.append(Image(w_img, width=450, height=250))
     elements.append(Spacer(1, 20))
 
 doc.build(elements)
@@ -340,13 +389,7 @@ print(out)
 # ==========================
 # TELEGRAM
 # ==========================
-card_msg = format_card_style(out)
-
-chunks = [card_msg[i:i+3500] for i in range(0, len(card_msg), 3500)]
-
-for c in chunks:
-    send_msg(c)
-
+parse_and_send(out)
 send_doc(pdf)
 
 print("✅ DONE")
