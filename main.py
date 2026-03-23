@@ -88,7 +88,8 @@ def clean(df):
     if not all(c in df.columns for c in cols):
         return pd.DataFrame()
 
-    df = df[cols]
+    df = df[cols].copy()
+
     for c in cols:
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
@@ -103,6 +104,7 @@ def remove_live(df):
 
     if df.index[-1].date() == now.date() and now.time() < dtime(15, 30):
         return df.iloc[:-1]
+
     return df
 
 # ==========================
@@ -118,7 +120,7 @@ def weekly(df):
     }).dropna()
 
 # ==========================
-# CHART (UPDATED)
+# CHART (EMA + COLORS)
 # ==========================
 def plot_chart(df, path):
 
@@ -187,31 +189,55 @@ def send_doc(path):
         )
 
 # ==========================
-# TELEGRAM FORMATTER
+# CARD FORMATTER (NEW)
 # ==========================
-def format_and_send(output):
+def format_card_style(output):
 
-    def extract(section):
-        if section in output:
-            return output.split(section)[1].split("📊" if section != "📊 Summary Table" else "🎯")[0]
-        return ""
+    lines = output.split("\n")
+    stocks = []
 
-    summary = extract("📊 Summary Table")
-    execution = extract("🎯 Execution Table")
-    picks = extract("✅ Final Picks")
-    notes = extract("⚠️ Notes")
+    for line in lines:
+        if "|" in line and "Stock" not in line and "---" not in line:
+            parts = [p.strip() for p in line.split("|") if p.strip()]
 
-    # Message 1
-    send_msg("📊 SUMMARY\n\n" + summary.strip())
+            if len(parts) >= 8:
+                stocks.append({
+                    "stock": parts[0],
+                    "stage": parts[2],
+                    "base": parts[3],
+                    "volume": parts[4],
+                    "setup": parts[5],
+                    "pattern": parts[6],
+                    "decision": parts[-1]
+                })
 
-    # Message 2
-    send_msg("🎯 EXECUTION\n\n" + execution.strip() + "\n\n⚠️ Risk: 1–2% per trade")
+    msg = "📊 BREAKOUT SUMMARY\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-    # Message 3
-    send_msg("🔥 FINAL PICKS\n\n" + picks.strip())
+    for s in stocks:
 
-    # Message 4
-    send_msg("⚠️ NOTES\n\n" + notes.strip())
+        if "BUY" in s["decision"]:
+            emoji = "🟢"
+        elif "WATCH" in s["decision"]:
+            emoji = "🟡"
+        else:
+            emoji = "🔴"
+
+        msg += f"{emoji} {s['stock']} → {s['decision']}\n"
+        msg += f"Stage: {s['stage']}\n"
+        msg += f"Base: {s['base']}\n"
+        msg += f"Volume: {s['volume']}\n"
+
+        if s["setup"] != "None":
+            msg += f"Setup: {s['setup']}\n"
+
+        if s["pattern"] != "None":
+            msg += f"Pattern: {s['pattern']}\n"
+        else:
+            msg += f"Pattern: ❌ None\n"
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+    return msg
 
 # ==========================
 # MAIN
@@ -257,7 +283,7 @@ pdf = f"{OUT}/report_{date_str}.pdf"
 doc = SimpleDocTemplate(pdf, pagesize=letter)
 styles = getSampleStyleSheet()
 
-ele = []
+elements = []
 
 for s in shortlist:
 
@@ -273,19 +299,19 @@ for s in shortlist:
     plot_chart(df, d_path)
     plot_chart(w, w_path)
 
-    ele.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
-    ele.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
-    ele.append(Spacer(1, 10))
+    elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
+    elements.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
+    elements.append(Spacer(1, 10))
 
-    ele.append(Paragraph("DAILY", styles['Heading3']))
-    ele.append(Image(d_path, width=450, height=250))
-    ele.append(Spacer(1, 10))
+    elements.append(Paragraph("DAILY", styles['Heading3']))
+    elements.append(Image(d_path, width=450, height=250))
+    elements.append(Spacer(1, 10))
 
-    ele.append(Paragraph("WEEKLY", styles['Heading3']))
-    ele.append(Image(w_path, width=450, height=250))
-    ele.append(Spacer(1, 20))
+    elements.append(Paragraph("WEEKLY", styles['Heading3']))
+    elements.append(Image(w_path, width=450, height=250))
+    elements.append(Spacer(1, 20))
 
-doc.build(ele)
+doc.build(elements)
 
 print("📄 PDF Ready")
 
@@ -309,13 +335,18 @@ response = client.responses.create(
 )
 
 out = response.output_text
-
 print(out)
 
 # ==========================
 # TELEGRAM
 # ==========================
-format_and_send(out)
+card_msg = format_card_style(out)
+
+chunks = [card_msg[i:i+3500] for i in range(0, len(card_msg), 3500)]
+
+for c in chunks:
+    send_msg(c)
+
 send_doc(pdf)
 
 print("✅ DONE")
