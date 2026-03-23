@@ -1,9 +1,10 @@
 # ==============================================
-# 🚀 ELITE SYSTEM (FINAL STABLE - FIXED ALL BUGS)
+# 🚀 ELITE SYSTEM (FINAL HARDENED VERSION)
 # ==============================================
 
 import os
 import re
+import time
 import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
@@ -16,6 +17,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
+
+# ==========================
+# CRITICAL FIX (DB LOCK)
+# ==========================
+yf.set_tz_cache_location(None)
 
 # ==========================
 # CONFIG
@@ -42,15 +48,25 @@ def remove_incomplete_candle(df):
     return df
 
 # ==========================
-# CLEAN OHLCV
+# CLEAN OHLCV (FINAL FIX)
 # ==========================
 def clean_ohlcv(df):
+
     if df is None or df.empty:
-        return df
+        return pd.DataFrame()
 
-    df = df[['Open','High','Low','Close','Volume']].copy()
+    # Fix MultiIndex
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-    for col in df.columns:
+    required = ['Open','High','Low','Close','Volume']
+
+    if not all(col in df.columns for col in required):
+        return pd.DataFrame()
+
+    df = df[required].copy()
+
+    for col in required:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     df = df.dropna()
@@ -58,10 +74,9 @@ def clean_ohlcv(df):
     return df
 
 # ==========================
-# WEEKLY RESAMPLE (FIXED)
+# WEEKLY RESAMPLE
 # ==========================
 def resample_weekly(df):
-
     return df.resample('W').agg({
         'Open': 'first',
         'High': 'max',
@@ -120,9 +135,12 @@ def get_all_nse_stocks():
     return stocks_list
 
 # ==========================
-# STRICT (UNCHANGED)
+# STRICT
 # ==========================
 def process_stock_strict(stock):
+
+    time.sleep(0.1)
+
     try:
         df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
 
@@ -160,6 +178,9 @@ def process_stock_strict(stock):
 # FALLBACK
 # ==========================
 def process_stock_fallback(stock):
+
+    time.sleep(0.1)
+
     try:
         df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
 
@@ -201,6 +222,9 @@ stocks_all = get_all_nse_stocks()
 
 shortlist = []
 
+# ==========================
+# STRICT
+# ==========================
 print("\n🔍 Running STRICT...\n")
 
 with ThreadPoolExecutor(max_workers=5) as executor:
@@ -213,7 +237,11 @@ with ThreadPoolExecutor(max_workers=5) as executor:
 
 print(f"\n📊 Strict: {len(shortlist)}")
 
+# ==========================
+# FALLBACK
+# ==========================
 if len(shortlist) == 0:
+
     print("\n⚠️ Running FALLBACK...\n")
 
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -221,18 +249,24 @@ if len(shortlist) == 0:
 
         for f in as_completed(futures):
             res = f.result()
+
             if res:
                 shortlist.append(res)
+
             if len(shortlist) >= 5:
                 break
 
+# FINAL SAFETY
 if len(shortlist) == 0:
+    print("\n🚨 Using TOP STOCKS fallback\n")
     shortlist = stocks_all[:5]
+
+print(f"\n📊 Final Shortlist: {len(shortlist)}")
 
 stocks = [s.replace(" (F)", "") for s in shortlist[:10]]
 
 # ==========================
-# CHARTS (FIXED)
+# CHARTS
 # ==========================
 valid_stocks = []
 
@@ -276,6 +310,11 @@ def send_msg(txt):
 
 if not valid_stocks:
     send_msg("⚠️ No valid charts generated today")
+
+    # GitHub artifact fix
+    with open(f"{OUTPUT_DIR}/empty.txt", "w") as f:
+        f.write("No charts")
+
     exit()
 
 msg = "📊 Daily Breakout Report\n\n"
