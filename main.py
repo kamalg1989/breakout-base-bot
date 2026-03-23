@@ -1,12 +1,12 @@
 # ==============================================
-# 🚀 ELITE SYSTEM (FINAL PRODUCTION VERSION)
+# 🚀 ELITE SYSTEM (FULLY OPTIMIZED PRO VERSION)
 # ==============================================
 
 import os
+import re
 import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
-import matplotlib.pyplot as plt
 from datetime import datetime, time as dtime
 import pytz
 import requests
@@ -33,9 +33,7 @@ def remove_incomplete_candle(df):
     india = pytz.timezone("Asia/Kolkata")
     now = datetime.now(india)
 
-    last_date = df.index[-1].date()
-
-    if last_date != now.date():
+    if df.index[-1].date() != now.date():
         return df
 
     if now.time() < dtime(15, 30):
@@ -44,10 +42,26 @@ def remove_incomplete_candle(df):
     return df
 
 # ==========================
-# NSE STOCKS
+# SYMBOL VALIDATION
+# ==========================
+def is_valid_symbol(symbol):
+    return re.match(r'^[A-Z&]+$', symbol) is not None
+
+# ==========================
+# NSE STOCK UNIVERSE
 # ==========================
 def get_all_nse_stocks():
-    indices = ["NIFTY 500", "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250"]
+
+    indices = [
+        "NIFTY 50", "NIFTY NEXT 50", "NIFTY 500",
+        "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250",
+        "NIFTY BANK", "NIFTY IT", "NIFTY PHARMA",
+        "NIFTY AUTO", "NIFTY FMCG", "NIFTY METAL",
+        "NIFTY ENERGY", "NIFTY INFRA", "NIFTY PSU BANK",
+        "NIFTY 200 MOMENTUM 30", "NIFTY ALPHA 50",
+        "NIFTY LOW VOLATILITY 50"
+    ]
+
     headers = {"User-Agent": "Mozilla/5.0"}
     stocks = set()
 
@@ -55,25 +69,33 @@ def get_all_nse_stocks():
         try:
             url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
             data = requests.get(url, headers=headers).json()
+
             for item in data['data']:
-                if item['symbol'].isalpha():
-                    stocks.add(item['symbol'] + ".NS")
-        except:
+                symbol = item['symbol']
+
+                if is_valid_symbol(symbol):
+                    stocks.add(symbol + ".NS")
+
+        except Exception as e:
+            print(f"⚠️ Failed index {index}: {e}")
             continue
 
-    return list(stocks)
+    stocks_list = sorted(list(stocks))
+    print(f"📊 Unique stocks count: {len(stocks_list)}")
+
+    return stocks_list
 
 # ==========================
-# STRICT FUNCTION (PARALLEL)
+# STRICT FUNCTION
 # ==========================
 def process_stock_strict(stock):
     try:
         df = yf.download(stock, period="4mo", auto_adjust=True, progress=False)
-        df = remove_incomplete_candle(df)
 
         if df is None or df.empty or len(df) < 80:
             return None
 
+        df = remove_incomplete_candle(df)
         df = df[['Open','High','Low','Close','Volume']].dropna()
         latest = df.iloc[-1]
 
@@ -119,30 +141,34 @@ def process_stock_strict(stock):
 # FALLBACK FUNCTION
 # ==========================
 def process_stock_fallback(stock):
-    try:
-        df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
 
-        if df is None or df.empty or len(df) < 30:
-            return None
+    for _ in range(2):
+        try:
+            df = yf.download(stock, period="3mo", auto_adjust=True, progress=False)
 
-        df = remove_incomplete_candle(df)
-        df = df[['Open','High','Low','Close','Volume']].dropna()
+            if df is None or df.empty or len(df) < 30:
+                continue
 
-        latest = df.iloc[-1]
+            df = remove_incomplete_candle(df)
+            df = df[['Open','High','Low','Close','Volume']].dropna()
 
-        if latest['Close'] < 50:
-            return None
+            latest = df.iloc[-1]
 
-        if latest['Close'] < 0.8 * df['High'].tail(20).max():
-            return None
+            if latest['Close'] < 50:
+                return None
 
-        return stock + " (F)"
+            if latest['Close'] < 0.8 * df['High'].tail(20).max():
+                return None
 
-    except:
-        return None
+            return stock + " (F)"
+
+        except:
+            continue
+
+    return None
 
 # ==========================
-# RUN
+# MAIN
 # ==========================
 BASE_DIR = "charts"
 os.makedirs(BASE_DIR, exist_ok=True)
@@ -154,38 +180,41 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"📁 Run folder: {OUTPUT_DIR}")
 
 stocks_all = get_all_nse_stocks()
-print(f"📊 Total stocks: {len(stocks_all)}")
 
 # ==========================
-# STRICT PARALLEL
+# STRICT SCAN
 # ==========================
 shortlist = []
+processed = set()
 
-print("\n🔍 Running STRICT (Parallel)...\n")
+print("\n🔍 Running STRICT...\n")
 
-with ThreadPoolExecutor(max_workers=10) as executor:
+with ThreadPoolExecutor(max_workers=5) as executor:
     futures = [executor.submit(process_stock_strict, s) for s in stocks_all]
 
     for f in as_completed(futures):
         res = f.result()
+
         if res:
             shortlist.append(res)
+            processed.add(res)
             print(f"✅ {res}")
 
 print(f"\n📊 Strict: {len(shortlist)}")
 
 # ==========================
-# FALLBACK
+# FALLBACK SCAN
 # ==========================
 if len(shortlist) == 0:
 
     print("\n⚠️ Running FALLBACK...\n")
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(process_stock_fallback, s) for s in stocks_all]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(process_stock_fallback, s) for s in stocks_all if s not in processed]
 
         for f in as_completed(futures):
             res = f.result()
+
             if res:
                 shortlist.append(res)
                 print(f"🔁 {res}")
@@ -193,21 +222,18 @@ if len(shortlist) == 0:
             if len(shortlist) >= 5:
                 break
 
+# FINAL SAFETY
+if len(shortlist) == 0:
+    print("\n🚨 Using TOP STOCKS fallback\n")
+    shortlist = stocks_all[:5]
+
 print(f"\n📊 Final Shortlist: {len(shortlist)}")
 
 stocks = [s.replace(" (F)", "") for s in shortlist[:10]]
 
-if not stocks:
-    print("❌ No stocks found")
-    exit()
-
 # ==========================
-# CHART GENERATION (SAFE)
+# CHARTS
 # ==========================
-def prepare(df):
-    df = df[['Open','High','Low','Close','Volume']].dropna()
-    return df
-
 valid_stocks = []
 
 print("\n📈 Generating charts...\n")
@@ -215,22 +241,23 @@ print("\n📈 Generating charts...\n")
 for stock in stocks:
     try:
         data = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-        data = remove_incomplete_candle(data)
 
         if data is None or data.empty:
             continue
 
-        df_d = prepare(data)
-        df_w = prepare(data.resample('W').last())
+        data = remove_incomplete_candle(data)
 
-        if df_d.empty or df_w.empty:
+        df = data[['Open','High','Low','Close','Volume']].dropna()
+        weekly = df.resample('W').last().dropna()
+
+        if df.empty or weekly.empty:
             continue
 
         d_path = f"{OUTPUT_DIR}/{stock}_Daily.png"
         w_path = f"{OUTPUT_DIR}/{stock}_Weekly.png"
 
-        mpf.plot(df_d, type='candle', volume=True, savefig=d_path)
-        mpf.plot(df_w, type='candle', volume=True, savefig=w_path)
+        mpf.plot(df, type='candle', volume=True, savefig=d_path)
+        mpf.plot(weekly, type='candle', volume=True, savefig=w_path)
 
         if os.path.exists(d_path) and os.path.exists(w_path):
             valid_stocks.append(stock)
@@ -238,8 +265,6 @@ for stock in stocks:
 
     except Exception as e:
         print(f"⚠️ {stock}: {e}")
-
-print(f"\n📊 Valid charts: {len(valid_stocks)}")
 
 if not valid_stocks:
     print("❌ No valid charts")
@@ -260,15 +285,13 @@ for stock in valid_stocks:
     d = f"{OUTPUT_DIR}/{stock}_Daily.png"
     w = f"{OUTPUT_DIR}/{stock}_Weekly.png"
 
-    if not os.path.exists(d) or not os.path.exists(w):
-        continue
-
-    elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
-    elements.append(Spacer(1, 10))
-    elements.append(Image(d, width=500, height=280))
-    elements.append(Spacer(1, 10))
-    elements.append(Image(w, width=500, height=280))
-    elements.append(Spacer(1, 20))
+    if os.path.exists(d) and os.path.exists(w):
+        elements.append(Paragraph(f"<b>{stock}</b>", styles['Heading2']))
+        elements.append(Spacer(1, 10))
+        elements.append(Image(d, width=500, height=280))
+        elements.append(Spacer(1, 10))
+        elements.append(Image(w, width=500, height=280))
+        elements.append(Spacer(1, 20))
 
 doc.build(elements)
 print("📄 PDF ready")
@@ -276,8 +299,6 @@ print("📄 PDF ready")
 # ==========================
 # MOCK GPT
 # ==========================
-print("\n🧪 MOCK GPT\n")
-
 buy = valid_stocks[:2]
 watch = valid_stocks[2:5]
 
