@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT BASE SYSTEM (FINAL WORKING VERSION)
+# 🚀 BREAKOUT BASE SYSTEM (FINAL PRO VERSION)
 # ==============================================
 
 import os
@@ -28,40 +28,40 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ==========================
-# STRICT GPT PROMPT
+# GPT PROMPT (STRICT)
 # ==========================
 GPT_PROMPT = """
 You are a professional breakout-base trading system.
 
-STRICT RULES:
+Follow STRICTLY:
 
-1. Weekly Trend & Stage (Base1/2 preferred)
-2. Base Score (0–10)
-3. Volume strength
-4. Setup (Breakout/Retest/Pullback)
-5. Pattern (MANDATORY)
+STEP 1 — WEEKLY Trend & Stage
+STEP 2 — BASE SCORE (0–10)
+STEP 3 — VOLUME
+STEP 4 — SETUP
+STEP 5 — PATTERN (MANDATORY)
 
 If no pattern → DO NOT BUY
 
-Final Score = Base + Stage + Volume + Setup + Pattern (max 14)
+Final Score (max 14)
 
 Decision:
 ≥11 BUY
 8–10 WATCH
 ≤7 AVOID
 
-OUTPUT:
+OUTPUT SECTIONS:
 
 📊 Summary Table
 🎯 Execution Table
 ✅ Final Picks
 ⚠️ Notes
 
-Max 2–3 stocks only.
+Max 2–3 stocks.
 """
 
 # ==========================
-# SAFE FETCH
+# FETCH
 # ==========================
 def fetch_data(stock, period):
     for _ in range(3):
@@ -77,7 +77,7 @@ def fetch_data(stock, period):
 # ==========================
 # CLEAN
 # ==========================
-def clean_ohlcv(df):
+def clean(df):
     if df.empty:
         return df
 
@@ -85,33 +85,30 @@ def clean_ohlcv(df):
         df.columns = df.columns.get_level_values(0)
 
     cols = ['Open','High','Low','Close','Volume']
-
     if not all(c in df.columns for c in cols):
         return pd.DataFrame()
 
-    df = df[cols].copy()
-
+    df = df[cols]
     for c in cols:
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
     return df.dropna()
 
 # ==========================
-# REMOVE INCOMPLETE CANDLE
+# REMOVE LIVE CANDLE
 # ==========================
-def remove_incomplete_candle(df):
+def remove_live(df):
     india = pytz.timezone("Asia/Kolkata")
     now = datetime.now(india)
 
     if df.index[-1].date() == now.date() and now.time() < dtime(15, 30):
         return df.iloc[:-1]
-
     return df
 
 # ==========================
 # WEEKLY
 # ==========================
-def resample_weekly(df):
+def weekly(df):
     return df.resample('W').agg({
         'Open':'first',
         'High':'max',
@@ -121,40 +118,64 @@ def resample_weekly(df):
     }).dropna()
 
 # ==========================
+# CHART (UPDATED)
+# ==========================
+def plot_chart(df, path):
+
+    df['EMA10'] = df['Close'].ewm(span=10).mean()
+    df['EMA21'] = df['Close'].ewm(span=21).mean()
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
+    df['EMA200'] = df['Close'].ewm(span=200).mean()
+
+    apds = [
+        mpf.make_addplot(df['EMA10'], color='red', width=1),
+        mpf.make_addplot(df['EMA21'], color='blue', width=1),
+        mpf.make_addplot(df['EMA50'], color='purple', width=1.2),
+        mpf.make_addplot(df['EMA200'], color='cyan', width=1.2),
+    ]
+
+    mc = mpf.make_marketcolors(
+        up='green', down='red',
+        wick='inherit', edge='inherit',
+        volume='inherit'
+    )
+
+    style = mpf.make_mpf_style(marketcolors=mc)
+
+    mpf.plot(
+        df,
+        type='candle',
+        volume=True,
+        addplot=apds,
+        style=style,
+        figsize=(10,6),
+        savefig=path
+    )
+
+# ==========================
 # NSE STOCKS
 # ==========================
-def get_all_nse_stocks():
+def get_stocks():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
         data = requests.get(url, headers=headers).json()
-
-        stocks = []
-
-        for d in data['data']:
-            symbol = d['symbol']
-
-            if "NIFTY" in symbol:
-                continue
-
-            if not re.match(r'^[A-Z&]+$', symbol):
-                continue
-
-            stocks.append(symbol + ".NS")
-
-        return stocks
-
+        return [
+            d['symbol'] + ".NS"
+            for d in data['data']
+            if "NIFTY" not in d['symbol']
+        ]
     except:
         return []
 
 # ==========================
 # TELEGRAM
 # ==========================
-def send_msg(text):
+def send_msg(txt):
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": text}
+        data={"chat_id": CHAT_ID, "text": txt}
     )
 
 def send_doc(path):
@@ -166,28 +187,48 @@ def send_doc(path):
         )
 
 # ==========================
+# TELEGRAM FORMATTER
+# ==========================
+def format_and_send(output):
+
+    def extract(section):
+        if section in output:
+            return output.split(section)[1].split("📊" if section != "📊 Summary Table" else "🎯")[0]
+        return ""
+
+    summary = extract("📊 Summary Table")
+    execution = extract("🎯 Execution Table")
+    picks = extract("✅ Final Picks")
+    notes = extract("⚠️ Notes")
+
+    # Message 1
+    send_msg("📊 SUMMARY\n\n" + summary.strip())
+
+    # Message 2
+    send_msg("🎯 EXECUTION\n\n" + execution.strip() + "\n\n⚠️ Risk: 1–2% per trade")
+
+    # Message 3
+    send_msg("🔥 FINAL PICKS\n\n" + picks.strip())
+
+    # Message 4
+    send_msg("⚠️ NOTES\n\n" + notes.strip())
+
+# ==========================
 # MAIN
 # ==========================
 date_str = datetime.now().strftime("%Y-%m-%d")
-OUTPUT_DIR = f"charts/run_{date_str}"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUT = f"charts/run_{date_str}"
+os.makedirs(OUT, exist_ok=True)
 
-stocks = get_all_nse_stocks()
-
-print(f"📊 Total stocks: {len(stocks)}")
-
-shortlist = []
+stocks = get_stocks()
 
 print("🔍 Screening...")
 
-for stock in stocks:
+shortlist = []
 
-    df = fetch_data(stock, "3mo")
-
-    if df.empty or len(df) < 60:
-        continue
-
-    df = clean_ohlcv(remove_incomplete_candle(df))
+for s in stocks:
+    df = fetch_data(s, "3mo")
+    df = clean(remove_live(df))
 
     if df.empty:
         continue
@@ -197,66 +238,62 @@ for stock in stocks:
     if latest['Close'] < 50 or latest['Volume'] < 200000:
         continue
 
-    recent_high = df['High'].rolling(20).max().iloc[-1]
+    high = df['High'].rolling(20).max().iloc[-1]
 
-    if latest['Close'] < 0.85 * recent_high:
+    if latest['Close'] < 0.85 * high:
         continue
 
-    shortlist.append(stock)
+    shortlist.append(s)
 
     if len(shortlist) >= 8:
         break
 
-print(f"📊 Shortlist: {len(shortlist)}")
+print("📊 Shortlist:", len(shortlist))
 
 # ==========================
 # PDF
 # ==========================
-pdf_path = f"{OUTPUT_DIR}/breakout_report_{date_str}.pdf"
-doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+pdf = f"{OUT}/report_{date_str}.pdf"
+doc = SimpleDocTemplate(pdf, pagesize=letter)
 styles = getSampleStyleSheet()
 
-elements = []
+ele = []
 
-for stock in shortlist:
+for s in shortlist:
 
-    data = fetch_data(stock, "6mo")
-    df = clean_ohlcv(remove_incomplete_candle(data))
-
+    df = clean(remove_live(fetch_data(s, "6mo")))
     if df.empty:
         continue
 
-    weekly = resample_weekly(df)
+    w = weekly(df)
 
-    d_path = f"{OUTPUT_DIR}/{stock}_D.png"
-    w_path = f"{OUTPUT_DIR}/{stock}_W.png"
+    d_path = f"{OUT}/{s}_D.png"
+    w_path = f"{OUT}/{s}_W.png"
 
-    mpf.plot(df, type='candle', volume=True, savefig=d_path)
-    mpf.plot(weekly, type='candle', volume=True, savefig=w_path)
+    plot_chart(df, d_path)
+    plot_chart(w, w_path)
 
-    elements.append(Paragraph(f"<b>STOCK: {stock}</b>", styles['Heading2']))
-    elements.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
-    elements.append(Spacer(1, 10))
+    ele.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
+    ele.append(Paragraph(f"DATE: {date_str}", styles['Normal']))
+    ele.append(Spacer(1, 10))
 
-    elements.append(Paragraph("DAILY", styles['Heading3']))
-    elements.append(Image(d_path, width=450, height=250))
-    elements.append(Spacer(1, 10))
+    ele.append(Paragraph("DAILY", styles['Heading3']))
+    ele.append(Image(d_path, width=450, height=250))
+    ele.append(Spacer(1, 10))
 
-    elements.append(Paragraph("WEEKLY", styles['Heading3']))
-    elements.append(Image(w_path, width=450, height=250))
-    elements.append(Spacer(1, 20))
+    ele.append(Paragraph("WEEKLY", styles['Heading3']))
+    ele.append(Image(w_path, width=450, height=250))
+    ele.append(Spacer(1, 20))
 
-doc.build(elements)
+doc.build(ele)
 
 print("📄 PDF Ready")
 
 # ==========================
-# GPT FIXED
+# GPT
 # ==========================
-print("🚀 GPT Analysis...")
-
 uploaded = client.files.create(
-    file=open(pdf_path, "rb"),
+    file=open(pdf, "rb"),
     purpose="assistants"
 )
 
@@ -271,18 +308,14 @@ response = client.responses.create(
     }]
 )
 
-output = response.output_text
+out = response.output_text
 
-print(output)
+print(out)
 
 # ==========================
-# TELEGRAM SAFE SPLIT
+# TELEGRAM
 # ==========================
-chunks = [output[i:i+3500] for i in range(0, len(output), 3500)]
-
-for chunk in chunks:
-    send_msg(chunk)
-
-send_doc(pdf_path)
+format_and_send(out)
+send_doc(pdf)
 
 print("✅ DONE")
