@@ -2,7 +2,7 @@ name: Run Trading System
 
 on:
   schedule:
-    - cron: '30 1 * * *'   # ✅ 7:00 AM IST
+    - cron: '00 0 * * *'   # ✅ 7:00 AM IST
   workflow_dispatch:
 
 jobs:
