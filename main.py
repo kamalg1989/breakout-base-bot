@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT SYSTEM (CHART + ALERT + BUTTON)
+# 🚀 FINAL SYSTEM (GPT = FULL DECISION ENGINE)
 # ==============================================
 
 import os
@@ -7,201 +7,281 @@ import json
 import requests
 import pandas as pd
 import yfinance as yf
+import mplfinance as mpf
 import matplotlib.pyplot as plt
+from datetime import datetime
+from openai import OpenAI
 
-# ==========================
-# CONFIG
-# ==========================
-CAPITAL = 1000000
-RISK_PER_TRADE = 0.01
+from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+CAPITAL = 1000000
+RISK_PER_TRADE = 0.01
+
 # ==========================
 # TELEGRAM
 # ==========================
-def send_telegram(msg, buttons=None):
+def send_message(text, buttons=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     payload = {
         "chat_id": CHAT_ID,
-        "text": msg,
+        "text": text,
         "parse_mode": "Markdown"
     }
 
     if buttons:
-        payload["reply_markup"] = json.dumps({
-            "inline_keyboard": buttons
-        })
+        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
 
     requests.post(url, data=payload)
 
-def send_chart(image_path, caption):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+def send_document(file_path, caption=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
 
-    with open(image_path, "rb") as img:
-        requests.post(url, files={"photo": img}, data={
-            "chat_id": CHAT_ID,
-            "caption": caption
-        })
+    with open(file_path, "rb") as f:
+        requests.post(url, files={"document": f},
+                      data={"chat_id": CHAT_ID, "caption": caption or ""})
+
+# ==========================
+# STOCKS
+# ==========================
+def get_stocks():
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    try:
+        data = requests.get(url, headers=headers).json()
+        return [x['symbol'] + ".NS" for x in data['data'] if x['symbol'].isalpha()]
+    except:
+        return []
 
 # ==========================
 # DATA
 # ==========================
-def fetch(stock, interval="1d", period="3mo"):
-    try:
-        return yf.download(stock, period=period, interval=interval, progress=False)
-    except:
-        return pd.DataFrame()
-
-def clean(df):
-    if df.empty:
-        return df
+def fetch(stock):
+    df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    cols = ['Open','High','Low','Close','Volume']
-    if not all(c in df.columns for c in cols):
-        return pd.DataFrame()
-
-    df = df[cols].copy()
-
-    for c in cols:
-        df[c] = pd.to_numeric(df[c], errors='coerce')
-
-    return df.dropna()
+    return df[['Open','High','Low','Close','Volume']].dropna()
 
 # ==========================
-# CHART GENERATION
+# STRICT FILTER ONLY
 # ==========================
-def generate_chart(df, stock, filename):
+def basic_filter(df):
 
-    plt.figure(figsize=(10,5))
-    plt.plot(df['Close'])
-    plt.title(stock)
-    plt.xlabel("Date")
-    plt.ylabel("Price")
+    if len(df) < 50:
+        return False
 
-    plt.grid()
-    plt.tight_layout()
+    if df['Close'].iloc[-1] < 50:
+        return False
 
-    plt.savefig(filename)
-    plt.close()
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
+    df['EMA200'] = df['Close'].ewm(span=200).mean()
 
-# ==========================
-# LOGIC
-# ==========================
-def is_valid(df):
-    recent = df.tail(20)
-    high = recent['High'].max()
-    low = recent['Low'].min()
-    return (high - low) / low < 0.15
+    if not (df.iloc[-1]['Close'] > df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200']):
+        return False
+
+    return True
 
 # ==========================
-# POSITION
+# TRADE
 # ==========================
-def create_trade(stock, df):
+def create_trade(df):
 
-    signal = df.iloc[-1]
+    entry = df.iloc[-1]['High']
+    sl = entry * 0.92
 
-    H1 = signal['High']
-    L1 = signal['Low']
+    risk = entry - sl
+    qty = int((CAPITAL * RISK_PER_TRADE) / risk)
 
-    entry = H1
-    hard_sl = entry * 0.92
+    return entry, sl, qty
 
-    risk_amt = CAPITAL * RISK_PER_TRADE
-    risk_per_share = entry - hard_sl
+# ==========================
+# CHART
+# ==========================
+def plot_chart(df, path):
 
-    if risk_per_share <= 0:
-        return None
+    df['EMA10'] = df['Close'].ewm(span=10).mean()
+    df['EMA21'] = df['Close'].ewm(span=21).mean()
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
+    df['EMA200'] = df['Close'].ewm(span=200).mean()
 
-    qty = int(risk_amt / risk_per_share)
+    apds = [
+        mpf.make_addplot(df['EMA10']),
+        mpf.make_addplot(df['EMA21']),
+        mpf.make_addplot(df['EMA50']),
+        mpf.make_addplot(df['EMA200'])
+    ]
 
-    return {
-        "entry": round(entry, 2),
-        "L1": round(L1, 2),
-        "hard_sl": round(hard_sl, 2),
-        "qty": qty
-    }
+    fig, _ = mpf.plot(df, type='candle', volume=True,
+                      addplot=apds, returnfig=True)
+
+    fig.savefig(path)
+    plt.close(fig)
+
+# ==========================
+# GPT VISION (CORE LOGIC)
+# ==========================
+def gpt_decision(pdf_path):
+
+    file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
+
+    PROMPT = """
+You are a professional breakout trader.
+
+Follow STRICTLY:
+
+WHAT TO BUY:
+- Stocks where institutional buying is visible (price + volume)
+- Strong demand zones
+- Avoid weak or manipulated structures
+
+WHEN TO BUY:
+- Clear base formation (tight consolidation)
+- Breakout readiness
+- Logical stop loss exists
+- HH-HL structure
+- Accumulation phase preferred
+
+TASK:
+
+1. For EACH stock:
+   - Score (0–10)
+   - Identify base quality
+   - Mention if institutional activity is visible
+
+2. Reject weak setups
+
+3. Give FINAL PICKS:
+   - Only stocks with score ≥ 7
+   - Max 2–3 stocks
+
+OUTPUT FORMAT:
+
+Stock | Score | Verdict
+
+Final Picks:
+- Stock1
+- Stock2
+"""
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": PROMPT},
+                {"type": "input_file", "file_id": file.id}
+            ]
+        }]
+    )
+
+    return response.output_text
+
+# ==========================
+# PARSE
+# ==========================
+def extract_picks(text):
+
+    picks = []
+
+    for line in text.split("\n"):
+        if line.startswith("-"):
+            picks.append(line.replace("-", "").strip())
+
+    return picks
 
 # ==========================
 # MAIN
 # ==========================
-def scan_and_alert():
+def run():
 
-    stocks = ["RELIANCE.NS","TECHM.NS","PERSISTENT.NS","GRANULES.NS"]
+    stocks = get_stocks()
+    shortlisted = []
 
     for s in stocks:
+        try:
+            df = fetch(s)
 
-        df_daily = clean(fetch(s, "1d", "3mo"))
-        df_weekly = clean(fetch(s, "1wk", "6mo"))
+            if basic_filter(df):
+                shortlisted.append(s)
 
-        if df_daily.empty:
+        except:
             continue
 
-        if not is_valid(df_daily):
+    shortlisted = shortlisted[:10]  # TOP 10 to GPT
+
+    folder = f"run_{datetime.now().strftime('%H%M%S')}"
+    os.makedirs(folder, exist_ok=True)
+
+    styles = getSampleStyleSheet()
+    elements = []
+
+    trade_map = {}
+
+    for s in shortlisted:
+
+        df = fetch(s)
+
+        img = f"{folder}/{s}.png"
+        plot_chart(df, img)
+
+        entry, sl, qty = create_trade(df)
+
+        trade_map[s] = (entry, sl, qty)
+
+        elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
+        elements.append(Spacer(1,10))
+        elements.append(Image(img, width=500, height=300))
+        elements.append(Spacer(1,20))
+
+    pdf_path = f"{folder}/report.pdf"
+    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+    doc.build(elements)
+
+    # SEND PDF (AUDIT)
+    send_document(pdf_path, "📄 Sent to GPT")
+
+    # GPT DECISION
+    gpt_output = gpt_decision(pdf_path)
+
+    send_message(f"📊 GPT ANALYSIS\n\n{gpt_output[:3500]}")
+
+    picks = extract_picks(gpt_output)
+
+    # SEND TRADES
+    for s in picks:
+
+        if s not in trade_map:
             continue
 
-        trade = create_trade(s, df_daily)
-        if not trade or trade["qty"] <= 0:
-            continue
+        entry, sl, qty = trade_map[s]
 
-        # ==========================
-        # GENERATE CHARTS
-        # ==========================
-        daily_file = f"{s}_daily.png"
-        weekly_file = f"{s}_weekly.png"
-
-        generate_chart(df_daily, f"{s} Daily", daily_file)
-
-        if not df_weekly.empty:
-            generate_chart(df_weekly, f"{s} Weekly", weekly_file)
-
-        # ==========================
-        # MESSAGE
-        # ==========================
         msg = f"""
-📈 *TRADE ALERT*
+📈 *FINAL TRADE*
 
 *{s}*
 
-Entry: `{trade['entry']}`
-L1: `{trade['L1']}`
-SL (8%): `{trade['hard_sl']}`
-Qty: `{trade['qty']}`
-
-_Risk Managed | Breakout Base_
+Entry: `{entry}`
+SL: `{sl}`
+Qty: `{qty}`
 """
 
-        callback = f"BUY|{s}|{trade['qty']}"
+        callback = f"BUY|{s}|{qty}"
+        buttons = [[{"text":"✅ Confirm Buy","callback_data":callback}]]
 
-        buttons = [[
-            {"text": "✅ Confirm Buy", "callback_data": callback}
-        ]]
+        send_message(msg, buttons)
 
-        # ==========================
-        # SEND
-        # ==========================
-        send_telegram(msg, buttons)
-
-        send_chart(daily_file, f"{s} Daily Chart")
-
-        if not df_weekly.empty:
-            send_chart(weekly_file, f"{s} Weekly Chart")
-
-        # ==========================
-        # CLEANUP
-        # ==========================
-        try:
-            os.remove(daily_file)
-            if os.path.exists(weekly_file):
-                os.remove(weekly_file)
-        except:
-            pass
-
-
+# ==========================
+# RUN
+# ==========================
 if __name__ == "__main__":
-    scan_and_alert()
+    run()
