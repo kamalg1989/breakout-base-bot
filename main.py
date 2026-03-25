@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT BASE SYSTEM (DEBUG + STABLE VERSION)
+# 🚀 BREAKOUT BASE SYSTEM (STABLE + DEBUG VERSION)
 # ==============================================
 
 import os
@@ -13,12 +13,12 @@ import pytz
 # ==========================
 # CONFIG
 # ==========================
-USE_CHARTINK = False          # 🔴 Set True if using CSV
-CSV_PATH = "chartink.csv"     # Path to your CSV
+USE_CHARTINK = False          # True → use CSV
+CSV_PATH = "chartink.csv"
 
 MIN_CLOSE = 50
 MIN_VOLUME = 200000
-BREAKOUT_THRESHOLD = 0.98     # relaxed from 1.0
+BREAKOUT_THRESHOLD = 0.98
 MAX_STOCKS = 20
 
 # ==========================
@@ -36,11 +36,10 @@ def load_chartink_csv(path):
     df = df.rename(columns=column_map)
 
     if "Ticker" not in df.columns:
-        raise Exception("❌ Ticker column missing in CSV")
+        raise Exception("❌ Ticker column missing")
 
     df["Ticker"] = df["Ticker"].astype(str)
 
-    # Normalize NSE format
     df["Ticker"] = df["Ticker"].apply(
         lambda x: x if x.endswith(".NS") else x + ".NS"
     )
@@ -48,7 +47,7 @@ def load_chartink_csv(path):
     return df[["Ticker"]].dropna().drop_duplicates()
 
 # ==========================
-# NSE STOCKS (fallback)
+# NSE STOCKS
 # ==========================
 def get_nifty500():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
@@ -82,13 +81,20 @@ def clean(df):
     if df.empty:
         return df
 
+    # ✅ FIX: flatten multi-index columns
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
     cols = ['Open','High','Low','Close','Volume']
+
     if not all(c in df.columns for c in cols):
         return pd.DataFrame()
 
     df = df[cols].copy()
 
     for c in cols:
+        if not isinstance(df[c], pd.Series):
+            return pd.DataFrame()
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
     return df.dropna()
@@ -120,7 +126,6 @@ def is_base(df):
     high = recent['High'].max()
     low = recent['Low'].min()
 
-    # tight range
     return (high - low) / low < 0.15
 
 def is_breakout(df):
@@ -171,7 +176,6 @@ for s in stocks:
 
     latest = df.iloc[-1]
 
-    # Basic filters
     if latest['Close'] < MIN_CLOSE or latest['Volume'] < MIN_VOLUME:
         continue
 
@@ -210,19 +214,19 @@ print("===========================\n")
 print("Shortlist:", shortlist)
 
 # ==========================
-# QUICK DIAGNOSIS
+# DIAGNOSIS
 # ==========================
 if weekly_pass == 0:
-    print("⚠️ Issue: Weekly trend filter too strict or market weak")
+    print("⚠️ Weekly filter too strict / weak market")
 
 elif base_pass == 0:
-    print("⚠️ Issue: Base detection too strict")
+    print("⚠️ Base logic too strict")
 
 elif breakout_pass == 0:
-    print("⚠️ Issue: Breakout condition too strict")
+    print("⚠️ Breakout condition too strict")
 
 elif len(shortlist) == 0:
-    print("⚠️ No trades — likely market condition")
+    print("⚠️ No trades (market condition)")
 
 else:
-    print("✅ System working — trades found")
+    print("✅ Trades found — system OK")
