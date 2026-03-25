@@ -1,13 +1,15 @@
 # ==============================================
-# 🚀 BREAKOUT SYSTEM (WITH TRADE TRACKING)
+# 🚀 BREAKOUT SYSTEM (TELEGRAM + DHAN EXECUTION)
 # ==============================================
 
 import os
 import json
 import time
+import requests
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
+from flask import Flask, request
 
 # ==========================
 # CONFIG
@@ -16,8 +18,16 @@ CAPITAL = 1000000
 RISK_PER_TRADE = 0.01
 STATE_FILE = "trades.json"
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
 # ==========================
-# LOAD / SAVE STATE
+# STATE
 # ==========================
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -28,16 +38,89 @@ def save_state(data):
     json.dump(data, open(STATE_FILE, "w"), indent=2)
 
 # ==========================
-# FETCH
+# TELEGRAM
+# ==========================
+def send_telegram(msg, buttons=None):
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": msg,
+        "parse_mode": "Markdown"
+    }
+
+    if buttons:
+        payload["reply_markup"] = json.dumps({
+            "inline_keyboard": buttons
+        })
+
+    requests.post(url, data=payload)
+
+# ==========================
+# DHAN ORDER
+# ==========================
+def place_order(stock, qty):
+
+    url = "https://api.dhan.co/orders"
+
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "transactionType": "BUY",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "MARKET",
+        "securityId": stock.replace(".NS",""),
+        "quantity": qty
+    }
+
+    headers = {
+        "access-token": DHAN_ACCESS_TOKEN,
+        "Content-Type": "application/json"
+    }
+
+    r = requests.post(url, json=payload, headers=headers)
+
+    return r.json()
+
+# ==========================
+# DATA
 # ==========================
 def fetch(stock):
     try:
-        return yf.download(stock, period="10d", interval="1d", progress=False)
+        return yf.download(stock, period="3mo", interval="1d", progress=False)
     except:
         return pd.DataFrame()
 
+def clean(df):
+    if df.empty:
+        return df
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    cols = ['Open','High','Low','Close','Volume']
+    if not all(c in df.columns for c in cols):
+        return pd.DataFrame()
+
+    df = df[cols].copy()
+
+    for c in cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    return df.dropna()
+
 # ==========================
-# ENTRY + POSITION
+# LOGIC
+# ==========================
+def is_valid(df):
+    recent = df.tail(20)
+    high = recent['High'].max()
+    low = recent['Low'].min()
+    return (high - low) / low < 0.15
+
+# ==========================
+# POSITION
 # ==========================
 def create_trade(stock, df):
 
@@ -64,66 +147,95 @@ def create_trade(stock, df):
     }
 
 # ==========================
-# MONITOR
+# SCAN + ALERT
 # ==========================
-def update_trades(trades):
+def scan_and_alert():
 
-    updated = {}
+    stocks = ["RELIANCE.NS","TECHM.NS","PERSISTENT.NS","GRANULES.NS"]  # replace with your shortlist
 
-    for s, t in trades.items():
+    state = load_state()
 
-        df = fetch(s)
+    for s in stocks:
+
+        df = clean(fetch(s))
         if df.empty:
-            updated[s] = t
             continue
 
-        last_close = df['Close'].iloc[-1]
+        if not is_valid(df):
+            continue
 
-        # ENTRY CHECK
-        if t["status"] == "PENDING":
-            if last_close >= t["entry"]:
-                t["status"] = "ACTIVE"
-                print(f"🟢 ENTRY TRIGGERED: {s}")
+        trade = create_trade(s, df)
 
-        # EXIT CHECK
-        elif t["status"] == "ACTIVE":
-            if last_close < t["L1"]:
-                t["status"] = "EXIT"
-                print(f"🔴 EXIT SIGNAL: {s}")
+        state[s] = trade
 
-        updated[s] = t
+        msg = f"""
+📈 *TRADE ALERT*
 
-    return updated
+{ s }
+
+Entry: {trade['entry']}
+L1: {trade['L1']}
+SL (8%): {trade['hard_sl']}
+Qty: {trade['qty']}
+"""
+
+        buttons = [[
+            {"text": "✅ Confirm Buy", "callback_data": f"BUY|{s}"}
+        ]]
+
+        send_telegram(msg, buttons)
+
+    save_state(state)
+
+# ==========================
+# WEBHOOK (TELEGRAM)
+# ==========================
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+
+    data = request.json
+
+    if "callback_query" in data:
+
+        query = data["callback_query"]
+        action, stock = query["data"].split("|")
+
+        state = load_state()
+        trade = state.get(stock)
+
+        if not trade:
+            return "OK"
+
+        if action == "BUY":
+
+            res = place_order(stock, trade["qty"])
+
+            trade["status"] = "ACTIVE"
+            state[stock] = trade
+            save_state(state)
+
+            send_telegram(f"🟢 ORDER PLACED: {stock}")
+
+    return "OK"
+
+# ==========================
+# SET TELEGRAM WEBHOOK
+# ==========================
+def set_webhook():
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+    requests.post(url, data={"url": WEBHOOK_URL})
 
 # ==========================
 # MAIN
 # ==========================
-state = load_state()
+if __name__ == "__main__":
 
-print("Loaded trades:", len(state))
+    # Step 1: scan and send alerts
+    scan_and_alert()
 
-# ---- UPDATE EXISTING ----
-state = update_trades(state)
+    # Step 2: start webhook server
+    set_webhook()
 
-# ---- ADD NEW TRADES (manual trigger for now) ----
-# (plug your shortlist logic here later)
-
-# Example placeholder (disable later)
-# state["RELIANCE.NS"] = create_trade("RELIANCE.NS", fetch("RELIANCE.NS"))
-
-save_state(state)
-
-# ==========================
-# PRINT
-# ==========================
-print("\n📊 CURRENT TRADES\n")
-
-for s, t in state.items():
-    print(f"""
-{s}
-Status: {t['status']}
-Entry: {t['entry']}
-L1: {t['L1']}
-SL: {t['hard_sl']}
-Qty: {t['qty']}
-""")
+    app.run(host="0.0.0.0", port=8000)
