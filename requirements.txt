@@ -4,3 +4,5 @@ mplfinance
 matplotlib
 openai
 reportlab
+flask
+requests
