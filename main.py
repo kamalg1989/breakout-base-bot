@@ -1,89 +1,86 @@
 # ==============================================
-# 🚀 BREAKOUT BASE SYSTEM (FINAL ELITE VERSION)
+# 🚀 BREAKOUT BASE SYSTEM (DEBUG + STABLE VERSION)
 # ==============================================
 
 import os
-import re
 import time
 import pandas as pd
 import yfinance as yf
-import mplfinance as mpf
+import requests
 from datetime import datetime, time as dtime
 import pytz
-import requests
-
-from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-
-from openai import OpenAI
 
 # ==========================
 # CONFIG
 # ==========================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+USE_CHARTINK = False          # 🔴 Set True if using CSV
+CSV_PATH = "chartink.csv"     # Path to your CSV
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+MIN_CLOSE = 50
+MIN_VOLUME = 200000
+BREAKOUT_THRESHOLD = 0.98     # relaxed from 1.0
+MAX_STOCKS = 20
 
 # ==========================
-# GPT PROMPT (FINAL)
+# CHARTINK PARSER
 # ==========================
-GPT_PROMPT = """
-You are a professional breakout-base trading system.
+def load_chartink_csv(path):
+    df = pd.read_csv(path)
 
-STRICTLY FOLLOW:
+    column_map = {
+        "Symbol": "Ticker",
+        "Close Price": "Close",
+        "Total Traded Volume": "Volume"
+    }
 
-1. Weekly trend + stage
-2. Base scoring (0–10)
-3. Volume strength
-4. Setup
-5. Pattern (MANDATORY)
+    df = df.rename(columns=column_map)
 
-If no pattern → DO NOT BUY
+    if "Ticker" not in df.columns:
+        raise Exception("❌ Ticker column missing in CSV")
 
-Score = Base + Stage + Volume + Setup + Pattern (max 14)
+    df["Ticker"] = df["Ticker"].astype(str)
 
-Decision:
-≥11 BUY
-8–10 WATCH
-≤7 AVOID
+    # Normalize NSE format
+    df["Ticker"] = df["Ticker"].apply(
+        lambda x: x if x.endswith(".NS") else x + ".NS"
+    )
 
-Also provide:
+    return df[["Ticker"]].dropna().drop_duplicates()
 
-• Market condition (overall)
-• Watchlist (future candidates)
+# ==========================
+# NSE STOCKS (fallback)
+# ==========================
+def get_nifty500():
+    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-OUTPUT FORMAT:
-
-📊 Summary Table
-🎯 Execution Table
-✅ Final Picks
-⚠️ Market Context
-📌 Watchlist
-"""
+    try:
+        data = requests.get(url, headers=headers).json()
+        return [
+            d['symbol'] + ".NS"
+            for d in data['data']
+            if "NIFTY" not in d['symbol']
+        ]
+    except:
+        return []
 
 # ==========================
 # DATA
 # ==========================
-def fetch_data(stock, period):
+def fetch(stock):
     for _ in range(3):
         try:
-            df = yf.Ticker(stock).history(period=period, auto_adjust=True)
+            df = yf.download(stock, period="6mo", interval="1d", progress=False)
             if not df.empty:
                 return df
         except:
             pass
-        time.sleep(0.5)
+        time.sleep(0.3)
     return pd.DataFrame()
 
 def clean(df):
     if df.empty:
         return df
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
 
     cols = ['Open','High','Low','Close','Volume']
     if not all(c in df.columns for c in cols):
@@ -100,296 +97,132 @@ def remove_live(df):
     india = pytz.timezone("Asia/Kolkata")
     now = datetime.now(india)
 
+    if len(df) == 0:
+        return df
+
     if df.index[-1].date() == now.date() and now.time() < dtime(15, 30):
         return df.iloc[:-1]
+
     return df
 
-def weekly(df):
-    return df.resample('W').agg({
-        'Open':'first',
-        'High':'max',
-        'Low':'min',
-        'Close':'last',
-        'Volume':'sum'
-    }).dropna()
+# ==========================
+# LOGIC
+# ==========================
+def is_weekly_uptrend(df):
+    w = df.resample('W').last()
+    if len(w) < 5:
+        return False
+
+    return w['Close'].iloc[-1] > w['Close'].iloc[-4]
+
+def is_base(df):
+    recent = df.tail(20)
+    high = recent['High'].max()
+    low = recent['Low'].min()
+
+    # tight range
+    return (high - low) / low < 0.15
+
+def is_breakout(df):
+    recent = df.tail(20)
+    resistance = recent['High'].max()
+    close = df['Close'].iloc[-1]
+
+    return close >= resistance * BREAKOUT_THRESHOLD
 
 # ==========================
-# CHART
+# LOAD STOCKS
 # ==========================
-def plot_chart(df, path):
+if USE_CHARTINK:
+    df_input = load_chartink_csv(CSV_PATH)
+    stocks = df_input["Ticker"].tolist()
+else:
+    stocks = get_nifty500()
 
-    df['EMA10'] = df['Close'].ewm(span=10).mean()
-    df['EMA21'] = df['Close'].ewm(span=21).mean()
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-    apds = [
-        mpf.make_addplot(df['EMA10'], color='red'),
-        mpf.make_addplot(df['EMA21'], color='blue'),
-        mpf.make_addplot(df['EMA50'], color='purple'),
-        mpf.make_addplot(df['EMA200'], color='cyan'),
-    ]
-
-    mc = mpf.make_marketcolors(
-        up='green', down='red',
-        volume='inherit'
-    )
-
-    style = mpf.make_mpf_style(marketcolors=mc)
-
-    mpf.plot(
-        df,
-        type='candle',
-        volume=True,
-        addplot=apds,
-        style=style,
-        figsize=(10,6),
-        savefig=path
-    )
+print("Total input stocks:", len(stocks))
 
 # ==========================
-# NSE STOCKS
+# DEBUG COUNTERS
 # ==========================
-def get_stocks():
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    try:
-        data = requests.get(url, headers=headers).json()
-        return [
-            d['symbol'] + ".NS"
-            for d in data['data']
-            if "NIFTY" not in d['symbol']
-        ]
-    except:
-        return []
-
-# ==========================
-# TELEGRAM
-# ==========================
-def send_msg(txt):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": txt}
-    )
-
-def send_doc(path):
-    with open(path, "rb") as f:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-            files={"document": f},
-            data={"chat_id": CHAT_ID}
-        )
-
-# ==========================
-# FORMATTER (FINAL)
-# ==========================
-def parse_and_send(output):
-
-    lines = output.split("\n")
-
-    stocks = []
-    market_context = ""
-    watchlist = ""
-
-    for line in lines:
-
-        if "|" in line and "Stock" not in line and "---" not in line:
-            parts = [p.strip() for p in line.split("|") if p.strip()]
-
-            if len(parts) >= 8:
-                stocks.append({
-                    "stock": parts[0],
-                    "stage": parts[2],
-                    "base": parts[3],
-                    "volume": parts[4],
-                    "setup": parts[5],
-                    "pattern": parts[6],
-                    "score": parts[7],
-                    "decision": parts[-1]
-                })
-
-        if "Market" in line:
-            market_context += line + "\n"
-
-        if "Watchlist" in line or "Monitor" in line:
-            watchlist += line + "\n"
-
-    # ======================
-    # MESSAGE 1 — SUMMARY
-    # ======================
-    msg1 = "📊 BREAKOUT SUMMARY\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    for s in stocks:
-
-        if "BUY" in s["decision"]:
-            emoji = "🟢"
-        elif "WATCH" in s["decision"]:
-            emoji = "🟡"
-        else:
-            emoji = "🔴"
-
-        msg1 += f"{emoji} {s['stock']} → {s['decision']} (Score: {s['score']})\n"
-        msg1 += f"Stage: {s['stage']}\n"
-        msg1 += f"Base: {s['base']}\n"
-        msg1 += f"Volume: {s['volume']}\n"
-
-        if s["setup"] != "None":
-            msg1 += f"Setup: {s['setup']}\n"
-
-        msg1 += f"Pattern: {s['pattern'] if s['pattern']!='None' else '❌ None'}\n"
-        msg1 += "\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    send_msg(msg1)
-
-    # ======================
-    # MESSAGE 2 — EXECUTION
-    # ======================
-    buys = [s for s in stocks if "BUY" in s["decision"]]
-
-    if not buys:
-        msg2 = """🎯 EXECUTION PLAN
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-❌ NO VALID SETUPS
-
-No stock meets breakout criteria
-
-👉 DO NOTHING
-
-━━━━━━━━━━━━━━━━━━━━━━"""
-    else:
-        msg2 = "🎯 EXECUTION PLAN\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        for b in buys:
-            msg2 += f"🟢 {b['stock']}\nSetup: {b['setup']}\n\n"
-
-    msg2 += "\n⚠️ Risk: 1–2% per trade"
-    send_msg(msg2)
-
-    # ======================
-    # MESSAGE 3 — FINAL PICKS
-    # ======================
-    if not buys:
-        msg3 = """🔥 FINAL PICKS
-
-❌ NO TRADES
-
-Stay in CASH
-"""
-    else:
-        msg3 = "🔥 FINAL PICKS\n\n"
-        for b in buys[:2]:
-            msg3 += f"• {b['stock']} ⭐\n"
-
-    send_msg(msg3)
-
-    # ======================
-    # MESSAGE 4 — MARKET
-    # ======================
-    send_msg("⚠️ MARKET CONTEXT\n\n" + (market_context or "Market mixed / weak"))
-
-    # ======================
-    # MESSAGE 5 — WATCHLIST
-    # ======================
-    send_msg("📌 WATCHLIST\n\n" + (watchlist or "Monitor improving bases"))
-
-# ==========================
-# MAIN
-# ==========================
-date_str = datetime.now().strftime("%Y-%m-%d")
-OUT = f"charts/run_{date_str}"
-os.makedirs(OUT, exist_ok=True)
-
-stocks = get_stocks()
-
-print("🔍 Screening...")
+total = len(stocks)
+weekly_pass = 0
+base_pass = 0
+breakout_pass = 0
+data_fail = 0
 
 shortlist = []
 
+# ==========================
+# MAIN LOOP
+# ==========================
 for s in stocks:
-    df = clean(remove_live(fetch_data(s, "3mo")))
+
+    df = fetch(s)
 
     if df.empty:
+        data_fail += 1
+        continue
+
+    df = clean(remove_live(df))
+
+    if df.empty:
+        data_fail += 1
         continue
 
     latest = df.iloc[-1]
 
-    if latest['Close'] < 50 or latest['Volume'] < 200000:
+    # Basic filters
+    if latest['Close'] < MIN_CLOSE or latest['Volume'] < MIN_VOLUME:
         continue
 
-    high = df['High'].rolling(20).max().iloc[-1]
-
-    if latest['Close'] < 0.85 * high:
+    # WEEKLY
+    if not is_weekly_uptrend(df):
         continue
+    weekly_pass += 1
+
+    # BASE
+    if not is_base(df):
+        continue
+    base_pass += 1
+
+    # BREAKOUT
+    if not is_breakout(df):
+        continue
+    breakout_pass += 1
 
     shortlist.append(s)
 
-    if len(shortlist) >= 8:
+    if len(shortlist) >= MAX_STOCKS:
         break
 
-print("📊 Shortlist:", len(shortlist))
+# ==========================
+# DEBUG OUTPUT
+# ==========================
+print("\n========== DEBUG ==========")
+print("Total:", total)
+print("Data Fail:", data_fail)
+print("After Weekly:", weekly_pass)
+print("After Base:", base_pass)
+print("After Breakout:", breakout_pass)
+print("Final Shortlist:", len(shortlist))
+print("===========================\n")
+
+print("Shortlist:", shortlist)
 
 # ==========================
-# PDF
+# QUICK DIAGNOSIS
 # ==========================
-pdf = f"{OUT}/report_{date_str}.pdf"
-doc = SimpleDocTemplate(pdf, pagesize=letter)
-styles = getSampleStyleSheet()
+if weekly_pass == 0:
+    print("⚠️ Issue: Weekly trend filter too strict or market weak")
 
-elements = []
+elif base_pass == 0:
+    print("⚠️ Issue: Base detection too strict")
 
-for s in shortlist:
+elif breakout_pass == 0:
+    print("⚠️ Issue: Breakout condition too strict")
 
-    df = clean(remove_live(fetch_data(s, "6mo")))
-    if df.empty:
-        continue
+elif len(shortlist) == 0:
+    print("⚠️ No trades — likely market condition")
 
-    w = weekly(df)
-
-    d = f"{OUT}/{s}_D.png"
-    w_img = f"{OUT}/{s}_W.png"
-
-    plot_chart(df, d)
-    plot_chart(w, w_img)
-
-    elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
-    elements.append(Spacer(1, 10))
-    elements.append(Image(d, width=450, height=250))
-    elements.append(Spacer(1, 10))
-    elements.append(Image(w_img, width=450, height=250))
-    elements.append(Spacer(1, 20))
-
-doc.build(elements)
-
-print("📄 PDF Ready")
-
-# ==========================
-# GPT
-# ==========================
-uploaded = client.files.create(
-    file=open(pdf, "rb"),
-    purpose="assistants"
-)
-
-response = client.responses.create(
-    model="gpt-4.1",
-    input=[{
-        "role": "user",
-        "content": [
-            {"type": "input_text", "text": GPT_PROMPT},
-            {"type": "input_file", "file_id": uploaded.id}
-        ]
-    }]
-)
-
-out = response.output_text
-print(out)
-
-# ==========================
-# TELEGRAM
-# ==========================
-parse_and_send(out)
-send_doc(pdf)
-
-print("✅ DONE")
+else:
+    print("✅ System working — trades found")
