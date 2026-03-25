@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (INSTITUTIONAL VERSION)
+# 🚀 FINAL SYSTEM (PDF-QUALITY CHARTS FIXED)
 # ==============================================
 
 import os
@@ -86,10 +86,7 @@ def get_stocks():
         except Exception as e:
             print("NSE fetch error:", e)
 
-    stocks = list(stocks)
-    print("Total stocks:", len(stocks))
-
-    return stocks
+    return list(stocks)
 
 
 # ==========================
@@ -145,74 +142,103 @@ def create_trade(df):
 
 
 # ==========================
-# CHART
+# ✅ FIXED CHART ENGINE
 # ==========================
-def plot_chart(stock, path):
+def plot_chart(stock, save_path):
 
     df = fetch(stock)
     df_weekly = to_weekly(df.copy())
 
-    def add_ema(d):
-        d['EMA10'] = d['Close'].ewm(span=10).mean()
-        d['EMA21'] = d['Close'].ewm(span=21).mean()
-        d['EMA50'] = d['Close'].ewm(span=50).mean()
-        d['EMA200'] = d['Close'].ewm(span=200).mean()
-        return d
+    # EMA
+    for ema in [10,21,50,200]:
+        df[f'EMA{ema}'] = df['Close'].ewm(span=ema).mean()
+        df_weekly[f'EMA{ema}'] = df_weekly['Close'].ewm(span=ema).mean()
 
-    df = add_ema(df)
-    df_weekly = add_ema(df_weekly)
-
+    # breakout + base
     recent = df.tail(20)
     breakout = recent['High'].max()
     base_low = recent['Low'].min()
     base_high = recent['High'].max()
 
-    trend = "Uptrend" if df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200'] else "Downtrend"
+    # style
+    mc = mpf.make_marketcolors(
+        up='green', down='red',
+        volume={'up':'green','down':'red'}
+    )
 
-    mc = mpf.make_marketcolors(up='green', down='red', volume='blue')
     style = mpf.make_mpf_style(base_mpf_style='yahoo', marketcolors=mc)
 
-    fig = plt.figure(figsize=(10,8))
+    # EMA plots
+    apds = [
+        mpf.make_addplot(df['EMA10'], color='red'),
+        mpf.make_addplot(df['EMA21'], color='purple'),
+        mpf.make_addplot(df['EMA50'], color='blue'),
+        mpf.make_addplot(df['EMA200'], color='orange'),
+    ]
+
+    apds_w = [
+        mpf.make_addplot(df_weekly['EMA10'], color='red'),
+        mpf.make_addplot(df_weekly['EMA21'], color='purple'),
+        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
+        mpf.make_addplot(df_weekly['EMA200'], color='orange'),
+    ]
 
     # DAILY
-    ax1 = fig.add_subplot(4,1,1)
-    ax1_vol = fig.add_subplot(4,1,2, sharex=ax1)
+    fig1, axlist1 = mpf.plot(
+        df,
+        type='candle',
+        style=style,
+        addplot=apds,
+        volume=True,  # ✅ FIX
+        returnfig=True,
+        figsize=(10,6),
+        title=f"{stock} (Daily)"
+    )
 
-    apds = [
-        mpf.make_addplot(df['EMA10'], ax=ax1),
-        mpf.make_addplot(df['EMA21'], ax=ax1),
-        mpf.make_addplot(df['EMA50'], ax=ax1),
-        mpf.make_addplot(df['EMA200'], ax=ax1),
-    ]
-
-    mpf.plot(df, ax=ax1, volume=ax1_vol, style=style, addplot=apds)
-
+    ax1 = axlist1[0]
     ax1.axhline(breakout, linestyle='--', color='green')
-    ax1.axhspan(base_low, base_high, alpha=0.15)
-    ax1.text(0.01,0.95,f"{stock} DAILY ({trend})", transform=ax1.transAxes)
+    ax1.axhspan(base_low, base_high, alpha=0.1, color='blue')
+
+    daily_path = save_path.replace(".png","_d.png")
+    fig1.savefig(daily_path, dpi=150)
+    plt.close(fig1)
 
     # WEEKLY
-    ax2 = fig.add_subplot(4,1,3)
-    ax2_vol = fig.add_subplot(4,1,4, sharex=ax2)
+    fig2, axlist2 = mpf.plot(
+        df_weekly,
+        type='candle',
+        style=style,
+        addplot=apds_w,
+        volume=True,
+        returnfig=True,
+        figsize=(10,6),
+        title=f"{stock} (Weekly)"
+    )
 
-    apds2 = [
-        mpf.make_addplot(df_weekly['EMA10'], ax=ax2),
-        mpf.make_addplot(df_weekly['EMA21'], ax=ax2),
-        mpf.make_addplot(df_weekly['EMA50'], ax=ax2),
-        mpf.make_addplot(df_weekly['EMA200'], ax=ax2),
-    ]
+    weekly_path = save_path.replace(".png","_w.png")
+    fig2.savefig(weekly_path, dpi=150)
+    plt.close(fig2)
 
-    mpf.plot(df_weekly, ax=ax2, volume=ax2_vol, style=style, addplot=apds2)
+    # MERGE
+    fig = plt.figure(figsize=(10,10))
 
-    ax2.text(0.01,0.95,f"{stock} WEEKLY", transform=ax2.transAxes)
+    ax1 = fig.add_subplot(2,1,1)
+    ax1.imshow(plt.imread(daily_path))
+    ax1.axis('off')
+
+    ax2 = fig.add_subplot(2,1,2)
+    ax2.imshow(plt.imread(weekly_path))
+    ax2.axis('off')
 
     plt.tight_layout()
-    plt.savefig(path)
+    plt.savefig(save_path, dpi=150)
     plt.close()
+
+    print("✅ Chart:", stock)
 
 
 # ==========================
-# GPT DECISION (ADVANCED)
+# GPT
 # ==========================
 def gpt_decision(pdf_path):
 
@@ -221,23 +247,19 @@ def gpt_decision(pdf_path):
     PROMPT = """
 You are an institutional trader.
 
-Focus on:
-- Base formation
-- Volume confirmation
-- Clean breakout
-- Risk control
+Focus:
+- Strong trend
+- Tight base
+- Volume breakout
+- Clean risk
 
-Score each stock (0–10)
+Score 0-10
 
-Only pick score >= 7
+Pick only >=7
 
 Return:
-
 FINAL PICKS:
 - STOCK | Score | Reason
-
-EXECUTION:
-- STOCK | Entry | StopLoss
 """
 
     res = client.responses.create(
@@ -273,8 +295,6 @@ def run():
 
     shortlist = shortlist[:10]
 
-    print("Shortlisted:", shortlist)
-
     folder = f"run_{datetime.now().strftime('%H%M%S')}"
     os.makedirs(folder, exist_ok=True)
 
@@ -300,7 +320,7 @@ def run():
     doc = SimpleDocTemplate(pdf_path, pagesize=letter)
     doc.build(elements)
 
-    send_document(pdf_path, "📄 Charts sent to GPT")
+    send_document(pdf_path, "📄 Charts")
 
     output = gpt_decision(pdf_path)
 
