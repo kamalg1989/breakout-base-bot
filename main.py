@@ -1,15 +1,12 @@
 # ==============================================
-# 🚀 BREAKOUT SYSTEM (TELEGRAM + DHAN EXECUTION)
+# 🚀 BREAKOUT SYSTEM (TELEGRAM ALERT ONLY)
 # ==============================================
 
 import os
 import json
-import time
 import requests
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
-from flask import Flask, request
 
 # ==========================
 # CONFIG
@@ -20,11 +17,6 @@ STATE_FILE = "trades.json"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
-DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
-
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # ==========================
 # STATE
@@ -40,48 +32,12 @@ def save_state(data):
 # ==========================
 # TELEGRAM
 # ==========================
-def send_telegram(msg, buttons=None):
-
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
+    requests.post(url, data={
         "chat_id": CHAT_ID,
-        "text": msg,
-        "parse_mode": "Markdown"
-    }
-
-    if buttons:
-        payload["reply_markup"] = json.dumps({
-            "inline_keyboard": buttons
-        })
-
-    requests.post(url, data=payload)
-
-# ==========================
-# DHAN ORDER
-# ==========================
-def place_order(stock, qty):
-
-    url = "https://api.dhan.co/orders"
-
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "transactionType": "BUY",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "MARKET",
-        "securityId": stock.replace(".NS",""),
-        "quantity": qty
-    }
-
-    headers = {
-        "access-token": DHAN_ACCESS_TOKEN,
-        "Content-Type": "application/json"
-    }
-
-    r = requests.post(url, json=payload, headers=headers)
-
-    return r.json()
+        "text": msg
+    })
 
 # ==========================
 # DATA
@@ -138,7 +94,6 @@ def create_trade(stock, df):
     qty = int(risk_amt / risk_per_share)
 
     return {
-        "stock": stock,
         "entry": round(entry,2),
         "L1": round(L1,2),
         "hard_sl": round(hard_sl,2),
@@ -147,15 +102,19 @@ def create_trade(stock, df):
     }
 
 # ==========================
-# SCAN + ALERT
+# MAIN
 # ==========================
 def scan_and_alert():
 
-    stocks = ["RELIANCE.NS","TECHM.NS","PERSISTENT.NS","GRANULES.NS"]  # replace with your shortlist
+    stocks = ["RELIANCE.NS","TECHM.NS","PERSISTENT.NS","GRANULES.NS"]
 
     state = load_state()
 
     for s in stocks:
+
+        # Skip if already active/pending
+        if s in state and state[s]["status"] != "EXIT":
+            continue
 
         df = clean(fetch(s))
         if df.empty:
@@ -165,77 +124,24 @@ def scan_and_alert():
             continue
 
         trade = create_trade(s, df)
-
         state[s] = trade
 
         msg = f"""
-📈 *TRADE ALERT*
+📈 TRADE ALERT
 
-{ s }
+{s}
 
 Entry: {trade['entry']}
 L1: {trade['L1']}
-SL (8%): {trade['hard_sl']}
+SL: {trade['hard_sl']}
 Qty: {trade['qty']}
+
+👉 Place order manually
 """
 
-        buttons = [[
-            {"text": "✅ Confirm Buy", "callback_data": f"BUY|{s}"}
-        ]]
-
-        send_telegram(msg, buttons)
+        send_telegram(msg)
 
     save_state(state)
 
-# ==========================
-# WEBHOOK (TELEGRAM)
-# ==========================
-app = Flask(__name__)
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-
-    data = request.json
-
-    if "callback_query" in data:
-
-        query = data["callback_query"]
-        action, stock = query["data"].split("|")
-
-        state = load_state()
-        trade = state.get(stock)
-
-        if not trade:
-            return "OK"
-
-        if action == "BUY":
-
-            res = place_order(stock, trade["qty"])
-
-            trade["status"] = "ACTIVE"
-            state[stock] = trade
-            save_state(state)
-
-            send_telegram(f"🟢 ORDER PLACED: {stock}")
-
-    return "OK"
-
-# ==========================
-# SET TELEGRAM WEBHOOK
-# ==========================
-def set_webhook():
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    requests.post(url, data={"url": WEBHOOK_URL})
-
-# ==========================
-# MAIN
-# ==========================
 if __name__ == "__main__":
-
-    # Step 1: scan and send alerts
     scan_and_alert()
-
-    # Step 2: start webhook server
-    set_webhook()
-
-    app.run(host="0.0.0.0", port=8000)
