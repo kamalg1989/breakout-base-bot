@@ -1,68 +1,10 @@
-# ==============================================
-# 🚀 FINAL SYSTEM (GPT = FULL DECISION ENGINE)
-# ==============================================
-
-import os
-import json
-import requests
 import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
 import matplotlib.pyplot as plt
-from datetime import datetime
-from openai import OpenAI
-
-from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-CAPITAL = 1000000
-RISK_PER_TRADE = 0.01
 
 # ==========================
-# TELEGRAM
-# ==========================
-def send_message(text, buttons=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-
-    if buttons:
-        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
-
-    requests.post(url, data=payload)
-
-def send_document(file_path, caption=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-
-    with open(file_path, "rb") as f:
-        requests.post(url, files={"document": f},
-                      data={"chat_id": CHAT_ID, "caption": caption or ""})
-
-# ==========================
-# STOCKS
-# ==========================
-def get_stocks():
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    try:
-        data = requests.get(url, headers=headers).json()
-        return [x['symbol'] + ".NS" for x in data['data'] if x['symbol'].isalpha()]
-    except:
-        return []
-
-# ==========================
-# DATA
+# FETCH DATA
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
@@ -73,215 +15,127 @@ def fetch(stock):
     return df[['Open','High','Low','Close','Volume']].dropna()
 
 # ==========================
-# STRICT FILTER ONLY
+# WEEKLY
 # ==========================
-def basic_filter(df):
-
-    if len(df) < 50:
-        return False
-
-    if df['Close'].iloc[-1] < 50:
-        return False
-
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-    if not (df.iloc[-1]['Close'] > df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200']):
-        return False
-
-    return True
+def to_weekly(df):
+    return df.resample('W').agg({
+        'Open':'first',
+        'High':'max',
+        'Low':'min',
+        'Close':'last',
+        'Volume':'sum'
+    }).dropna()
 
 # ==========================
-# TRADE
+# ADD EMA
 # ==========================
-def create_trade(df):
-
-    entry = df.iloc[-1]['High']
-    sl = entry * 0.92
-
-    risk = entry - sl
-    qty = int((CAPITAL * RISK_PER_TRADE) / risk)
-
-    return entry, sl, qty
-
-# ==========================
-# CHART
-# ==========================
-def plot_chart(df, path):
-
+def add_ema(df):
     df['EMA10'] = df['Close'].ewm(span=10).mean()
     df['EMA21'] = df['Close'].ewm(span=21).mean()
     df['EMA50'] = df['Close'].ewm(span=50).mean()
     df['EMA200'] = df['Close'].ewm(span=200).mean()
+    return df
+
+# ==========================
+# CORE PLOT
+# ==========================
+def plot_chart(stock):
+
+    df = fetch(stock)
+    df = add_ema(df)
+
+    df_weekly = to_weekly(df.copy())
+    df_weekly = add_ema(df_weekly)
+
+    # ======================
+    # LOGIC
+    # ======================
+    recent = df.tail(20)
+
+    breakout = recent['High'].max()
+    base_low = recent['Low'].min()
+    base_high = recent['High'].max()
+
+    df['vol_avg'] = df['Volume'].rolling(20).mean()
+    df['vol_spike'] = df['Volume'] > 1.5 * df['vol_avg']
+
+    trend = "Uptrend" if df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200'] else "Downtrend"
+
+    # ======================
+    # FIGURE
+    # ======================
+    fig = plt.figure(figsize=(10, 8))
+
+    # ----------------------
+    # DAILY
+    # ----------------------
+    ax1 = fig.add_subplot(2,1,1)
 
     apds = [
-        mpf.make_addplot(df['EMA10']),
-        mpf.make_addplot(df['EMA21']),
-        mpf.make_addplot(df['EMA50']),
-        mpf.make_addplot(df['EMA200'])
+        mpf.make_addplot(df['EMA10'], ax=ax1, color='purple'),
+        mpf.make_addplot(df['EMA21'], ax=ax1, color='cyan'),
+        mpf.make_addplot(df['EMA50'], ax=ax1, color='blue'),
+        mpf.make_addplot(df['EMA200'], ax=ax1, color='orange'),
     ]
 
-    fig, _ = mpf.plot(df, type='candle', volume=True,
-                      addplot=apds, returnfig=True)
+    mpf.plot(df,
+             type='candle',
+             ax=ax1,
+             style='yahoo',
+             addplot=apds,
+             volume=False)
 
-    fig.savefig(path)
-    plt.close(fig)
+    # Breakout line
+    ax1.axhline(breakout, linestyle='--', color='green', linewidth=1)
 
-# ==========================
-# GPT VISION (CORE LOGIC)
-# ==========================
-def gpt_decision(pdf_path):
+    # Base box
+    ax1.axhspan(base_low, base_high, alpha=0.15, color='grey')
 
-    file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
+    # Trend label
+    ax1.text(0.01, 0.95, f"{stock} - DAILY ({trend})",
+             transform=ax1.transAxes,
+             fontsize=10,
+             verticalalignment='top')
 
-    PROMPT = """
-You are a professional breakout trader.
+    ax1.legend(['EMA10','EMA21','EMA50','EMA200'])
 
-Follow STRICTLY:
+    # ----------------------
+    # WEEKLY
+    # ----------------------
+    ax2 = fig.add_subplot(2,1,2)
 
-WHAT TO BUY:
-- Stocks where institutional buying is visible (price + volume)
-- Strong demand zones
-- Avoid weak or manipulated structures
+    apds2 = [
+        mpf.make_addplot(df_weekly['EMA10'], ax=ax2, color='purple'),
+        mpf.make_addplot(df_weekly['EMA21'], ax=ax2, color='cyan'),
+        mpf.make_addplot(df_weekly['EMA50'], ax=ax2, color='blue'),
+        mpf.make_addplot(df_weekly['EMA200'], ax=ax2, color='orange'),
+    ]
 
-WHEN TO BUY:
-- Clear base formation (tight consolidation)
-- Breakout readiness
-- Logical stop loss exists
-- HH-HL structure
-- Accumulation phase preferred
+    mpf.plot(df_weekly,
+             type='candle',
+             ax=ax2,
+             style='yahoo',
+             addplot=apds2,
+             volume=True)
 
-TASK:
+    ax2.text(0.01, 0.95, f"{stock} - WEEKLY",
+             transform=ax2.transAxes,
+             fontsize=10,
+             verticalalignment='top')
 
-1. For EACH stock:
-   - Score (0–10)
-   - Identify base quality
-   - Mention if institutional activity is visible
+    ax2.legend(['EMA10','EMA21','EMA50','EMA200'])
 
-2. Reject weak setups
+    # ----------------------
+    # SAVE
+    # ----------------------
+    plt.tight_layout()
+    plt.savefig(f"{stock}.png")
+    plt.close()
 
-3. Give FINAL PICKS:
-   - Only stocks with score ≥ 7
-   - Max 2–3 stocks
-
-OUTPUT FORMAT:
-
-Stock | Score | Verdict
-
-Final Picks:
-- Stock1
-- Stock2
-"""
-
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": PROMPT},
-                {"type": "input_file", "file_id": file.id}
-            ]
-        }]
-    )
-
-    return response.output_text
+    print(f"✅ Chart saved: {stock}.png")
 
 # ==========================
-# PARSE
-# ==========================
-def extract_picks(text):
-
-    picks = []
-
-    for line in text.split("\n"):
-        if line.startswith("-"):
-            picks.append(line.replace("-", "").strip())
-
-    return picks
-
-# ==========================
-# MAIN
-# ==========================
-def run():
-
-    stocks = get_stocks()
-    shortlisted = []
-
-    for s in stocks:
-        try:
-            df = fetch(s)
-
-            if basic_filter(df):
-                shortlisted.append(s)
-
-        except:
-            continue
-
-    shortlisted = shortlisted[:10]  # TOP 10 to GPT
-
-    folder = f"run_{datetime.now().strftime('%H%M%S')}"
-    os.makedirs(folder, exist_ok=True)
-
-    styles = getSampleStyleSheet()
-    elements = []
-
-    trade_map = {}
-
-    for s in shortlisted:
-
-        df = fetch(s)
-
-        img = f"{folder}/{s}.png"
-        plot_chart(df, img)
-
-        entry, sl, qty = create_trade(df)
-
-        trade_map[s] = (entry, sl, qty)
-
-        elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
-        elements.append(Spacer(1,10))
-        elements.append(Image(img, width=500, height=300))
-        elements.append(Spacer(1,20))
-
-    pdf_path = f"{folder}/report.pdf"
-    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
-    doc.build(elements)
-
-    # SEND PDF (AUDIT)
-    send_document(pdf_path, "📄 Sent to GPT")
-
-    # GPT DECISION
-    gpt_output = gpt_decision(pdf_path)
-
-    send_message(f"📊 GPT ANALYSIS\n\n{gpt_output[:3500]}")
-
-    picks = extract_picks(gpt_output)
-
-    # SEND TRADES
-    for s in picks:
-
-        if s not in trade_map:
-            continue
-
-        entry, sl, qty = trade_map[s]
-
-        msg = f"""
-📈 *FINAL TRADE*
-
-*{s}*
-
-Entry: `{entry}`
-SL: `{sl}`
-Qty: `{qty}`
-"""
-
-        callback = f"BUY|{s}|{qty}"
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":callback}]]
-
-        send_message(msg, buttons)
-
-# ==========================
-# RUN
+# TEST
 # ==========================
 if __name__ == "__main__":
-    run()
+    plot_chart("RELIANCE.NS")
