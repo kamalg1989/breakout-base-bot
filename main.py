@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT SYSTEM (TELEGRAM ALERT ONLY)
+# 🚀 BREAKOUT SYSTEM (STATELESS TELEGRAM ALERTS)
 # ==============================================
 
 import os
@@ -13,31 +13,28 @@ import yfinance as yf
 # ==========================
 CAPITAL = 1000000
 RISK_PER_TRADE = 0.01
-STATE_FILE = "trades.json"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ==========================
-# STATE
-# ==========================
-def load_state():
-    if os.path.exists(STATE_FILE):
-        return json.load(open(STATE_FILE))
-    return {}
-
-def save_state(data):
-    json.dump(data, open(STATE_FILE, "w"), indent=2)
-
-# ==========================
 # TELEGRAM
 # ==========================
-def send_telegram(msg):
+def send_telegram(msg, buttons=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={
+
+    payload = {
         "chat_id": CHAT_ID,
-        "text": msg
-    })
+        "text": msg,
+        "parse_mode": "Markdown"
+    }
+
+    if buttons:
+        payload["reply_markup"] = json.dumps({
+            "inline_keyboard": buttons
+        })
+
+    requests.post(url, data=payload)
 
 # ==========================
 # DATA
@@ -91,14 +88,16 @@ def create_trade(stock, df):
     risk_amt = CAPITAL * RISK_PER_TRADE
     risk_per_share = entry - hard_sl
 
+    if risk_per_share <= 0:
+        return None
+
     qty = int(risk_amt / risk_per_share)
 
     return {
-        "entry": round(entry,2),
-        "L1": round(L1,2),
-        "hard_sl": round(hard_sl,2),
-        "qty": qty,
-        "status": "PENDING"
+        "entry": round(entry, 2),
+        "L1": round(L1, 2),
+        "hard_sl": round(hard_sl, 2),
+        "qty": qty
     }
 
 # ==========================
@@ -108,13 +107,7 @@ def scan_and_alert():
 
     stocks = ["RELIANCE.NS","TECHM.NS","PERSISTENT.NS","GRANULES.NS"]
 
-    state = load_state()
-
     for s in stocks:
-
-        # Skip if already active/pending
-        if s in state and state[s]["status"] != "EXIT":
-            continue
 
         df = clean(fetch(s))
         if df.empty:
@@ -124,24 +117,29 @@ def scan_and_alert():
             continue
 
         trade = create_trade(s, df)
-        state[s] = trade
+        if not trade or trade["qty"] <= 0:
+            continue
 
         msg = f"""
-📈 TRADE ALERT
+📈 *TRADE ALERT*
 
 {s}
 
 Entry: {trade['entry']}
 L1: {trade['L1']}
-SL: {trade['hard_sl']}
+SL (8%): {trade['hard_sl']}
 Qty: {trade['qty']}
-
-👉 Place order manually
 """
 
-        send_telegram(msg)
+        # 🔥 Stateless payload (critical)
+        callback = f"BUY|{s}|{trade['qty']}"
 
-    save_state(state)
+        buttons = [[
+            {"text": "✅ Confirm Buy", "callback_data": callback}
+        ]]
+
+        send_telegram(msg, buttons)
+
 
 if __name__ == "__main__":
     scan_and_alert()
