@@ -1,3 +1,7 @@
+# ==============================================
+# 🚀 FULL CHART GENERATION (FINAL FIXED VERSION)
+# ==============================================
+
 import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
@@ -15,7 +19,7 @@ def fetch(stock):
     return df[['Open','High','Low','Close','Volume']].dropna()
 
 # ==========================
-# WEEKLY
+# WEEKLY RESAMPLE
 # ==========================
 def to_weekly(df):
     return df.resample('W').agg({
@@ -37,7 +41,7 @@ def add_ema(df):
     return df
 
 # ==========================
-# CORE PLOT
+# MAIN PLOT FUNCTION
 # ==========================
 def plot_chart(stock):
 
@@ -61,15 +65,20 @@ def plot_chart(stock):
 
     trend = "Uptrend" if df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200'] else "Downtrend"
 
+    # Volume colors
+    vol_colors = ['green' if v else 'gray' for v in df['vol_spike']]
+    vol_colors_weekly = ['blue'] * len(df_weekly)
+
     # ======================
     # FIGURE
     # ======================
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(12, 10))
 
     # ----------------------
     # DAILY
     # ----------------------
-    ax1 = fig.add_subplot(2,1,1)
+    ax1 = fig.add_subplot(4,1,1)
+    ax1_vol = fig.add_subplot(4,1,2, sharex=ax1)
 
     apds = [
         mpf.make_addplot(df['EMA10'], ax=ax1, color='purple'),
@@ -78,12 +87,15 @@ def plot_chart(stock):
         mpf.make_addplot(df['EMA200'], ax=ax1, color='orange'),
     ]
 
-    mpf.plot(df,
-             type='candle',
-             ax=ax1,
-             style='yahoo',
-             addplot=apds,
-             volume=False)
+    mpf.plot(
+        df,
+        type='candle',
+        ax=ax1,
+        volume=ax1_vol,
+        style='yahoo',
+        addplot=apds,
+        volume_kwargs={'color': vol_colors}
+    )
 
     # Breakout line
     ax1.axhline(breakout, linestyle='--', color='green', linewidth=1)
@@ -91,7 +103,7 @@ def plot_chart(stock):
     # Base box
     ax1.axhspan(base_low, base_high, alpha=0.15, color='grey')
 
-    # Trend label
+    # Title + trend
     ax1.text(0.01, 0.95, f"{stock} - DAILY ({trend})",
              transform=ax1.transAxes,
              fontsize=10,
@@ -102,7 +114,8 @@ def plot_chart(stock):
     # ----------------------
     # WEEKLY
     # ----------------------
-    ax2 = fig.add_subplot(2,1,2)
+    ax2 = fig.add_subplot(4,1,3)
+    ax2_vol = fig.add_subplot(4,1,4, sharex=ax2)
 
     apds2 = [
         mpf.make_addplot(df_weekly['EMA10'], ax=ax2, color='purple'),
@@ -111,12 +124,15 @@ def plot_chart(stock):
         mpf.make_addplot(df_weekly['EMA200'], ax=ax2, color='orange'),
     ]
 
-    mpf.plot(df_weekly,
-             type='candle',
-             ax=ax2,
-             style='yahoo',
-             addplot=apds2,
-             volume=True)
+    mpf.plot(
+        df_weekly,
+        type='candle',
+        ax=ax2,
+        volume=ax2_vol,
+        style='yahoo',
+        addplot=apds2,
+        volume_kwargs={'color': vol_colors_weekly}
+    )
 
     ax2.text(0.01, 0.95, f"{stock} - WEEKLY",
              transform=ax2.transAxes,
@@ -125,14 +141,15 @@ def plot_chart(stock):
 
     ax2.legend(['EMA10','EMA21','EMA50','EMA200'])
 
-    # ----------------------
-    # SAVE
-    # ----------------------
+    # ======================
+    # FINALIZE
+    # ======================
     plt.tight_layout()
-    plt.savefig(f"{stock}.png")
+    plt.savefig(f"{stock}.png", dpi=150)
     plt.close()
 
     print(f"✅ Chart saved: {stock}.png")
+
 
 # ==========================
 # TEST
