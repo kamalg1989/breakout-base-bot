@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 BREAKOUT SYSTEM (STATELESS TELEGRAM ALERTS)
+# 🚀 BREAKOUT SYSTEM (CHART + ALERT + BUTTON)
 # ==============================================
 
 import os
@@ -7,6 +7,7 @@ import json
 import requests
 import pandas as pd
 import yfinance as yf
+import matplotlib.pyplot as plt
 
 # ==========================
 # CONFIG
@@ -36,12 +37,21 @@ def send_telegram(msg, buttons=None):
 
     requests.post(url, data=payload)
 
+def send_chart(image_path, caption):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+
+    with open(image_path, "rb") as img:
+        requests.post(url, files={"photo": img}, data={
+            "chat_id": CHAT_ID,
+            "caption": caption
+        })
+
 # ==========================
 # DATA
 # ==========================
-def fetch(stock):
+def fetch(stock, interval="1d", period="3mo"):
     try:
-        return yf.download(stock, period="3mo", interval="1d", progress=False)
+        return yf.download(stock, period=period, interval=interval, progress=False)
     except:
         return pd.DataFrame()
 
@@ -62,6 +72,23 @@ def clean(df):
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
     return df.dropna()
+
+# ==========================
+# CHART GENERATION
+# ==========================
+def generate_chart(df, stock, filename):
+
+    plt.figure(figsize=(10,5))
+    plt.plot(df['Close'])
+    plt.title(stock)
+    plt.xlabel("Date")
+    plt.ylabel("Price")
+
+    plt.grid()
+    plt.tight_layout()
+
+    plt.savefig(filename)
+    plt.close()
 
 # ==========================
 # LOGIC
@@ -109,36 +136,71 @@ def scan_and_alert():
 
     for s in stocks:
 
-        df = clean(fetch(s))
-        if df.empty:
+        df_daily = clean(fetch(s, "1d", "3mo"))
+        df_weekly = clean(fetch(s, "1wk", "6mo"))
+
+        if df_daily.empty:
             continue
 
-        if not is_valid(df):
+        if not is_valid(df_daily):
             continue
 
-        trade = create_trade(s, df)
+        trade = create_trade(s, df_daily)
         if not trade or trade["qty"] <= 0:
             continue
 
+        # ==========================
+        # GENERATE CHARTS
+        # ==========================
+        daily_file = f"{s}_daily.png"
+        weekly_file = f"{s}_weekly.png"
+
+        generate_chart(df_daily, f"{s} Daily", daily_file)
+
+        if not df_weekly.empty:
+            generate_chart(df_weekly, f"{s} Weekly", weekly_file)
+
+        # ==========================
+        # MESSAGE
+        # ==========================
         msg = f"""
 📈 *TRADE ALERT*
 
-{s}
+*{s}*
 
-Entry: {trade['entry']}
-L1: {trade['L1']}
-SL (8%): {trade['hard_sl']}
-Qty: {trade['qty']}
+Entry: `{trade['entry']}`
+L1: `{trade['L1']}`
+SL (8%): `{trade['hard_sl']}`
+Qty: `{trade['qty']}`
+
+_Risk Managed | Breakout Base_
 """
 
-        # 🔥 Stateless payload (critical)
         callback = f"BUY|{s}|{trade['qty']}"
 
         buttons = [[
             {"text": "✅ Confirm Buy", "callback_data": callback}
         ]]
 
+        # ==========================
+        # SEND
+        # ==========================
         send_telegram(msg, buttons)
+
+        send_chart(daily_file, f"{s} Daily Chart")
+
+        if not df_weekly.empty:
+            send_chart(weekly_file, f"{s} Weekly Chart")
+
+        # ==========================
+        # CLEANUP
+        # ==========================
+        try:
+            os.remove(daily_file)
+            if os.path.exists(weekly_file):
+                os.remove(weekly_file)
+        except:
+            pass
 
 
 if __name__ == "__main__":
