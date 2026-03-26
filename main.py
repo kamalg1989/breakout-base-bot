@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (CHART FIX + GAP CONTROL)
+# 🚀 FINAL SYSTEM (ENHANCED LABELS)
 # ==============================================
 
 import os
@@ -14,9 +14,8 @@ from datetime import datetime
 from openai import OpenAI
 from matplotlib.patches import Patch
 
-from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
+from reportlab.platypus import SimpleDocTemplate, Image, Spacer
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
 
 # ==========================
 # CONFIG
@@ -58,7 +57,6 @@ def send_document(path, caption=None):
 # NSE STOCK FETCH
 # ==========================
 def get_stocks():
-
     headers = {"User-Agent": "Mozilla/5.0"}
 
     indices = [
@@ -96,7 +94,6 @@ def get_stocks():
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
 
-    # ✅ FIX: datetime index
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -148,19 +145,17 @@ def create_trade(df):
 
 
 # ==========================
-# ✅ UPDATED CHART ENGINE
+# CHART ENGINE
 # ==========================
 def plot_chart(stock, save_path):
 
     df = fetch(stock)
     df_weekly = to_weekly(df.copy())
 
-    # EMA
     for ema in [10,21,50,200]:
         df[f'EMA{ema}'] = df['Close'].ewm(span=ema).mean()
         df_weekly[f'EMA{ema}'] = df_weekly['Close'].ewm(span=ema).mean()
 
-    # breakout + base
     recent = df.tail(20)
     breakout = recent['High'].max()
     base_low = recent['Low'].min()
@@ -196,23 +191,18 @@ def plot_chart(stock, save_path):
 
     # DAILY
     fig1, axlist1 = mpf.plot(
-        df,
-        type='candle',
-        style=style,
-        addplot=apds,
-        volume=True,
-        returnfig=True,
-        figsize=(10,6),
-        datetime_format='%b-%y',
-        xrotation=20
+        df, type='candle', style=style, addplot=apds,
+        volume=True, returnfig=True,
+        figsize=(10,6), datetime_format='%b-%y', xrotation=20
     )
 
     ax1 = axlist1[0]
     ax1.axhline(breakout, linestyle='--', color='green')
     ax1.axhspan(base_low, base_high, alpha=0.1)
-
     ax1.legend(handles=legend_elements, loc='upper left')
-    ax1.set_title(f"{stock} (Daily)", fontsize=10)
+
+    # ✅ ENHANCED TITLE
+    ax1.set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
 
     daily_path = save_path.replace(".png","_d.png")
     fig1.savefig(daily_path, dpi=180, bbox_inches='tight', pad_inches=0)
@@ -220,27 +210,23 @@ def plot_chart(stock, save_path):
 
     # WEEKLY
     fig2, axlist2 = mpf.plot(
-        df_weekly,
-        type='candle',
-        style=style,
-        addplot=apds_w,
-        volume=True,
-        returnfig=True,
-        figsize=(10,6),
-        datetime_format='%b-%y',
-        xrotation=20
+        df_weekly, type='candle', style=style, addplot=apds_w,
+        volume=True, returnfig=True,
+        figsize=(10,6), datetime_format='%b-%y', xrotation=20
     )
 
     ax2 = axlist2[0]
     ax2.legend(handles=legend_elements, loc='upper left')
-    ax2.set_title(f"{stock} (Weekly)", fontsize=10)
+
+    # ✅ ENHANCED TITLE
+    ax2.set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
 
     weekly_path = save_path.replace(".png","_w.png")
     fig2.savefig(weekly_path, dpi=180, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE (WITH GAP)
-    fig = plt.figure(figsize=(10,10))
+    # MERGE
+    fig = plt.figure(figsize=(10,9))
 
     ax1 = fig.add_subplot(2,1,1)
     ax1.imshow(plt.imread(daily_path))
@@ -250,52 +236,12 @@ def plot_chart(stock, save_path):
     ax2.imshow(plt.imread(weekly_path))
     ax2.axis('off')
 
-    # ✅ GAP CONTROL
-    plt.subplots_adjust(hspace=0.12)
+    plt.subplots_adjust(hspace=0.08)
 
-    plt.savefig(save_path, dpi=180, bbox_inches='tight', pad_inches=0.1)
+    plt.savefig(save_path, dpi=180, bbox_inches='tight', pad_inches=0.05)
     plt.close()
 
     print("✅ Chart:", stock)
-
-
-# ==========================
-# GPT
-# ==========================
-def gpt_decision(pdf_path):
-
-    file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
-
-    PROMPT = """
-You are an institutional trader.
-
-Focus:
-- Strong trend
-- Tight base
-- Volume breakout
-- Clean risk
-
-Score 0-10
-
-Pick only >=7
-
-Return:
-FINAL PICKS:
-- STOCK | Score | Reason
-"""
-
-    res = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{
-            "role":"user",
-            "content":[
-                {"type":"input_text","text":PROMPT},
-                {"type":"input_file","file_id":file.id}
-            ]
-        }]
-    )
-
-    return res.output_text
 
 
 # ==========================
@@ -306,7 +252,6 @@ def run():
     stocks = get_stocks()
 
     shortlist = []
-
     for s in stocks:
         try:
             df = fetch(s)
@@ -320,7 +265,6 @@ def run():
     folder = f"run_{datetime.now().strftime('%H%M%S')}"
     os.makedirs(folder, exist_ok=True)
 
-    styles = getSampleStyleSheet()
     elements = []
     trade_map = {}
 
@@ -333,43 +277,14 @@ def run():
         entry, sl, qty = create_trade(df)
         trade_map[s] = (entry, sl, qty)
 
-        elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
+        elements.append(Image(img, width=520, height=420))
         elements.append(Spacer(1,10))
-        elements.append(Image(img, width=500, height=400))
-        elements.append(Spacer(1,20))
 
     pdf_path = f"{folder}/charts.pdf"
     doc = SimpleDocTemplate(pdf_path, pagesize=letter)
     doc.build(elements)
 
     send_document(pdf_path, "📄 Charts")
-
-    output = gpt_decision(pdf_path)
-
-    send_message(output[:3000])
-
-    picks = [l.split("|")[0].replace("-","").strip()
-             for l in output.split("\n") if l.startswith("-")]
-
-    for s in picks:
-        if s not in trade_map:
-            continue
-
-        entry, sl, qty = trade_map[s]
-
-        msg = f"""
-📈 *FINAL TRADE*
-
-{s}
-
-Entry: `{entry}`
-SL: `{sl}`
-Qty: `{qty}`
-"""
-
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
-
-        send_message(msg, buttons)
 
 
 # ==========================
