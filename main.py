@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (INSTITUTIONAL + CLEAN CHARTS)
+# 🚀 FINAL SYSTEM (SCORE COLOR + LABEL)
 # ==============================================
 
 import os
@@ -29,6 +29,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CAPITAL = 1000000
 RISK_PER_TRADE = 0.01
 
+
 # ==========================
 # TELEGRAM
 # ==========================
@@ -55,44 +56,10 @@ def send_document(path, caption=None):
 
 
 # ==========================
-# NSE STOCK FETCH
-# ==========================
-def get_stocks():
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    indices = [
-        "NIFTY 500",
-        "NIFTY MIDCAP 150",
-        "NIFTY SMALLCAP 250"
-    ]
-
-    stocks = set()
-
-    for index in indices:
-        try:
-            url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            res = requests.get(url, headers=headers, timeout=10)
-            data = res.json()
-
-            for item in data.get("data", []):
-                symbol = item.get("symbol")
-                if symbol and symbol.isalpha():
-                    stocks.add(symbol + ".NS")
-
-            time.sleep(0.5)
-
-        except:
-            continue
-
-    return list(stocks)
-
-
-# ==========================
 # DATA
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -132,7 +99,7 @@ def filter_stock(df):
 
 
 # ==========================
-# TRADE LOGIC
+# TRADE
 # ==========================
 def create_trade(df):
     entry = df.iloc[-1]['High']
@@ -142,9 +109,48 @@ def create_trade(df):
 
 
 # ==========================
-# CHART ENGINE (FINAL)
+# GPT PARSE
 # ==========================
-def plot_chart(stock, save_path):
+def parse_gpt_output(output):
+
+    scores = {}
+    picks = []
+
+    for line in output.split("\n"):
+        if "|" in line and "-" in line:
+            try:
+                parts = line.replace("-", "").split("|")
+                stock = parts[0].strip()
+                score = float(parts[1].strip())
+
+                scores[stock] = score
+
+                if score >= 7:
+                    picks.append(stock)
+
+            except:
+                continue
+
+    return scores, picks
+
+
+# ==========================
+# SCORE STYLE
+# ==========================
+def score_style(score):
+
+    if score >= 8:
+        return "green", "STRONG"
+    elif score >= 7:
+        return "yellow", "MODERATE"
+    else:
+        return "red", "WEAK"
+
+
+# ==========================
+# CHART ENGINE
+# ==========================
+def plot_chart(stock, save_path, score=None):
 
     df = fetch(stock)
     df_weekly = to_weekly(df.copy())
@@ -172,13 +178,6 @@ def plot_chart(stock, save_path):
         mpf.make_addplot(df['EMA200'], color='purple'),
     ]
 
-    apds_w = [
-        mpf.make_addplot(df_weekly['EMA10'], color='black'),
-        mpf.make_addplot(df_weekly['EMA21'], color='red'),
-        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
-        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
-    ]
-
     legend = [
         Patch(facecolor='black', label='EMA10'),
         Patch(facecolor='red', label='EMA21'),
@@ -190,25 +189,39 @@ def plot_chart(stock, save_path):
     fig1, ax1 = mpf.plot(
         df, type='candle', style=style, addplot=apds,
         volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y', xrotation=15
+        figsize=(12,6), datetime_format='%b-%y'
     )
 
-    ax1[0].axhline(breakout, linestyle='--', color='green')
-    ax1[0].axhspan(base_low, base_high, alpha=0.1)
-    ax1[0].legend(handles=legend)
-    ax1[0].set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
+    ax = ax1[0]
+    ax.axhline(breakout, linestyle='--', color='green')
+    ax.axhspan(base_low, base_high, alpha=0.1)
+    ax.legend(handles=legend)
+
+    # ===== SCORE OVERLAY =====
+    if score is not None:
+        color, label = score_style(score)
+
+        ax.text(
+            0.78, 0.92,
+            f"{score}/10\n{label}",
+            transform=ax.transAxes,
+            fontsize=11,
+            fontweight='bold',
+            bbox=dict(facecolor=color, alpha=0.6)
+        )
+
+    ax.set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
 
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
     # WEEKLY
     fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style, addplot=apds_w,
+        df_weekly, type='candle', style=style,
         volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y', xrotation=15
+        figsize=(12,6), datetime_format='%b-%y'
     )
 
-    ax2[0].legend(handles=legend)
     ax2[0].set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
 
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
@@ -217,13 +230,13 @@ def plot_chart(stock, save_path):
     # MERGE
     fig = plt.figure(figsize=(12,9))
 
-    ax1 = fig.add_subplot(2,1,1)
-    ax1.imshow(plt.imread("d.png"))
-    ax1.axis('off')
+    a1 = fig.add_subplot(2,1,1)
+    a1.imshow(plt.imread("d.png"))
+    a1.axis('off')
 
-    ax2 = fig.add_subplot(2,1,2)
-    ax2.imshow(plt.imread("w.png"))
-    ax2.axis('off')
+    a2 = fig.add_subplot(2,1,2)
+    a2.imshow(plt.imread("w.png"))
+    a2.axis('off')
 
     plt.subplots_adjust(hspace=0.05)
 
@@ -232,7 +245,7 @@ def plot_chart(stock, save_path):
 
 
 # ==========================
-# PDF BUILDER (KEY FIX)
+# PDF
 # ==========================
 def build_pdf(images, path):
 
@@ -261,19 +274,18 @@ def gpt_decision(pdf_path):
     file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
 
     PROMPT = """
-You are an institutional breakout trader.
+Institutional breakout system.
 
-Analyze charts visually.
+Evaluate:
 
-Rules:
-- Strong trend (EMA alignment)
+- EMA alignment
 - Tight base
-- Breakout near highs
-- Volume confirmation
+- Breakout proximity
+- Volume expansion
 
 Score 0-10
 
-Pick only >=7
+Pick >=7
 
 Return:
 
@@ -320,7 +332,6 @@ def run():
     trade_map = {}
 
     for s in shortlist:
-
         img = f"{folder}/{s}.png"
         plot_chart(s, img)
         images.append(img)
@@ -336,10 +347,22 @@ def run():
     output = gpt_decision(pdf_path)
     send_message(output[:3000])
 
-    # picks
-    picks = [l.split("|")[0].replace("-","").strip()
-             for l in output.split("\n") if l.startswith("-")]
+    scores, picks = parse_gpt_output(output)
 
+    # ===== REBUILD WITH SCORES =====
+    images_scored = []
+
+    for s in shortlist:
+        img = f"{folder}/{s}_scored.png"
+        plot_chart(s, img, score=scores.get(s))
+        images_scored.append(img)
+
+    pdf_path2 = f"{folder}/charts_scored.pdf"
+    build_pdf(images_scored, pdf_path2)
+
+    send_document(pdf_path2, "📊 Charts with Scores")
+
+    # ===== FINAL TRADES =====
     for s in picks:
         if s not in trade_map:
             continue
