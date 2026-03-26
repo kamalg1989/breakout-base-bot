@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (ENHANCED LABELS)
+# 🚀 FINAL SYSTEM (NO WHITESPACE – FIXED)
 # ==============================================
 
 import os
@@ -16,6 +16,7 @@ from matplotlib.patches import Patch
 
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 
 # ==========================
 # CONFIG
@@ -54,46 +55,10 @@ def send_document(path, caption=None):
 
 
 # ==========================
-# NSE STOCK FETCH
-# ==========================
-def get_stocks():
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    indices = [
-        "NIFTY 500",
-        "NIFTY MIDCAP 150",
-        "NIFTY SMALLCAP 250"
-    ]
-
-    stocks = set()
-
-    for index in indices:
-        try:
-            url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            res = requests.get(url, headers=headers, timeout=10)
-
-            data = res.json()
-
-            for item in data.get("data", []):
-                symbol = item.get("symbol")
-
-                if symbol and symbol.isalpha():
-                    stocks.add(symbol + ".NS")
-
-            time.sleep(0.5)
-
-        except Exception as e:
-            print("NSE fetch error:", e)
-
-    return list(stocks)
-
-
-# ==========================
 # DATA
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -112,40 +77,7 @@ def to_weekly(df):
 
 
 # ==========================
-# FILTER
-# ==========================
-def filter_stock(df):
-
-    if len(df) < 50:
-        return False
-
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-    cond1 = df.iloc[-1]['Close'] > df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200']
-
-    recent = df.tail(20)
-    base_range = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min()
-    cond2 = base_range < 0.15
-
-    vol_avg = df['Volume'].rolling(20).mean()
-    cond3 = df.iloc[-1]['Volume'] > 0.8 * vol_avg.iloc[-1]
-
-    return cond1 and cond2 and cond3
-
-
-# ==========================
-# TRADE LOGIC
-# ==========================
-def create_trade(df):
-    entry = df.iloc[-1]['High']
-    sl = entry * 0.92
-    qty = int((CAPITAL * RISK_PER_TRADE) / (entry - sl))
-    return round(entry,2), round(sl,2), qty
-
-
-# ==========================
-# CHART ENGINE
+# CHART ENGINE (STRETCHED)
 # ==========================
 def plot_chart(stock, save_path):
 
@@ -189,59 +121,89 @@ def plot_chart(stock, save_path):
         Patch(facecolor='purple', label='EMA200')
     ]
 
-    # DAILY
+    # DAILY (wider)
     fig1, axlist1 = mpf.plot(
-        df, type='candle', style=style, addplot=apds,
-        volume=True, returnfig=True,
-        figsize=(10,6), datetime_format='%b-%y', xrotation=20
+        df,
+        type='candle',
+        style=style,
+        addplot=apds,
+        volume=True,
+        returnfig=True,
+        figsize=(12,6),   # 🔥 wider
+        datetime_format='%b-%y',
+        xrotation=15
     )
 
     ax1 = axlist1[0]
     ax1.axhline(breakout, linestyle='--', color='green')
     ax1.axhspan(base_low, base_high, alpha=0.1)
     ax1.legend(handles=legend_elements, loc='upper left')
-
-    # ✅ ENHANCED TITLE
     ax1.set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
 
-    daily_path = save_path.replace(".png","_d.png")
-    fig1.savefig(daily_path, dpi=180, bbox_inches='tight', pad_inches=0)
+    fig1.savefig("daily.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
     # WEEKLY
     fig2, axlist2 = mpf.plot(
-        df_weekly, type='candle', style=style, addplot=apds_w,
-        volume=True, returnfig=True,
-        figsize=(10,6), datetime_format='%b-%y', xrotation=20
+        df_weekly,
+        type='candle',
+        style=style,
+        addplot=apds_w,
+        volume=True,
+        returnfig=True,
+        figsize=(12,6),
+        datetime_format='%b-%y',
+        xrotation=15
     )
 
     ax2 = axlist2[0]
     ax2.legend(handles=legend_elements, loc='upper left')
-
-    # ✅ ENHANCED TITLE
     ax2.set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
 
-    weekly_path = save_path.replace(".png","_w.png")
-    fig2.savefig(weekly_path, dpi=180, bbox_inches='tight', pad_inches=0)
+    fig2.savefig("weekly.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE
-    fig = plt.figure(figsize=(10,9))
+    # MERGE (minimal gap)
+    fig = plt.figure(figsize=(12,9))
 
     ax1 = fig.add_subplot(2,1,1)
-    ax1.imshow(plt.imread(daily_path))
+    ax1.imshow(plt.imread("daily.png"))
     ax1.axis('off')
 
     ax2 = fig.add_subplot(2,1,2)
-    ax2.imshow(plt.imread(weekly_path))
+    ax2.imshow(plt.imread("weekly.png"))
     ax2.axis('off')
 
-    plt.subplots_adjust(hspace=0.08)
+    plt.subplots_adjust(hspace=0.05)
 
-    plt.savefig(save_path, dpi=180, bbox_inches='tight', pad_inches=0.05)
+    plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close()
 
-    print("✅ Chart:", stock)
+
+# ==========================
+# PDF (AUTO SCALE → KEY FIX)
+# ==========================
+def build_pdf(images, pdf_path):
+
+    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+    elements = []
+
+    for img_path in images:
+
+        img = ImageReader(img_path)
+        w, h = img.getSize()
+
+        page_w, page_h = letter
+
+        scale = min((page_w-20)/w, (page_h-20)/h)
+
+        elements.append(
+            Image(img_path, width=w*scale, height=h*scale)
+        )
+
+        elements.append(Spacer(1,8))  # small gap
+
+    doc.build(elements)
 
 
 # ==========================
@@ -249,42 +211,23 @@ def plot_chart(stock, save_path):
 # ==========================
 def run():
 
-    stocks = get_stocks()
-
-    shortlist = []
-    for s in stocks:
-        try:
-            df = fetch(s)
-            if filter_stock(df):
-                shortlist.append(s)
-        except:
-            continue
-
-    shortlist = shortlist[:10]
+    stocks = ["RELIANCE.NS","TCS.NS","INFY.NS"]  # test
 
     folder = f"run_{datetime.now().strftime('%H%M%S')}"
     os.makedirs(folder, exist_ok=True)
 
-    elements = []
-    trade_map = {}
+    images = []
 
-    for s in shortlist:
-
+    for s in stocks:
         img = f"{folder}/{s}.png"
         plot_chart(s, img)
-
-        df = fetch(s)
-        entry, sl, qty = create_trade(df)
-        trade_map[s] = (entry, sl, qty)
-
-        elements.append(Image(img, width=520, height=420))
-        elements.append(Spacer(1,10))
+        images.append(img)
 
     pdf_path = f"{folder}/charts.pdf"
-    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
-    doc.build(elements)
 
-    send_document(pdf_path, "📄 Charts")
+    build_pdf(images, pdf_path)
+
+    send_document(pdf_path, "📄 Charts Ready")
 
 
 # ==========================
