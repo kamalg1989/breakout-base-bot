@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (INSTITUTIONAL + SCORE OVERLAY)
+# 🚀 FINAL SYSTEM (PDF FIX + NO LAYOUT ERROR)
 # ==============================================
 
 import os
@@ -31,7 +31,7 @@ RISK_PER_TRADE = 0.01
 
 
 # ==========================
-# NSE STOCK FETCH (FIXED)
+# NSE STOCK FETCH
 # ==========================
 def get_stocks():
 
@@ -49,24 +49,19 @@ def get_stocks():
         try:
             url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
             res = requests.get(url, headers=headers, timeout=10)
-
             data = res.json()
 
             for item in data.get("data", []):
                 symbol = item.get("symbol")
-
                 if symbol and symbol.isalpha():
                     stocks.add(symbol + ".NS")
 
             time.sleep(0.5)
 
-        except Exception as e:
-            print("NSE fetch error:", e)
+        except:
+            continue
 
-    stocks = list(stocks)
-    print("Total stocks:", len(stocks))
-
-    return stocks
+    return list(stocks)
 
 
 # ==========================
@@ -148,48 +143,9 @@ def create_trade(df):
 
 
 # ==========================
-# GPT PARSE
+# CHART (same clean version)
 # ==========================
-def parse_gpt_output(output):
-
-    scores = {}
-    picks = []
-
-    for line in output.split("\n"):
-        if "|" in line and "-" in line:
-            try:
-                parts = line.replace("-", "").split("|")
-                stock = parts[0].strip()
-                score = float(parts[1].strip())
-
-                scores[stock] = score
-
-                if score >= 7:
-                    picks.append(stock)
-
-            except:
-                continue
-
-    return scores, picks
-
-
-# ==========================
-# SCORE STYLE
-# ==========================
-def score_style(score):
-
-    if score >= 8:
-        return "green", "STRONG"
-    elif score >= 7:
-        return "yellow", "MODERATE"
-    else:
-        return "red", "WEAK"
-
-
-# ==========================
-# CHART ENGINE
-# ==========================
-def plot_chart(stock, save_path, score=None):
+def plot_chart(stock, save_path):
 
     df = fetch(stock)
     df_weekly = to_weekly(df.copy())
@@ -217,36 +173,15 @@ def plot_chart(stock, save_path, score=None):
         mpf.make_addplot(df['EMA200'], color='purple'),
     ]
 
-    legend = [
-        Patch(facecolor='black', label='EMA10'),
-        Patch(facecolor='red', label='EMA21'),
-        Patch(facecolor='blue', label='EMA50'),
-        Patch(facecolor='purple', label='EMA200')
-    ]
-
     fig1, ax1 = mpf.plot(
         df, type='candle', style=style, addplot=apds,
         volume=True, returnfig=True,
         figsize=(12,6), datetime_format='%b-%y'
     )
 
-    ax = ax1[0]
-    ax.axhline(breakout, linestyle='--', color='green')
-    ax.axhspan(base_low, base_high, alpha=0.1)
-    ax.legend(handles=legend)
-
-    if score is not None:
-        color, label = score_style(score)
-        ax.text(
-            0.78, 0.92,
-            f"{score}/10\n{label}",
-            transform=ax.transAxes,
-            fontsize=11,
-            fontweight='bold',
-            bbox=dict(facecolor=color, alpha=0.6)
-        )
-
-    ax.set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
+    ax1[0].axhline(breakout, linestyle='--', color='green')
+    ax1[0].axhspan(base_low, base_high, alpha=0.1)
+    ax1[0].set_title(f"{stock} (Daily)", fontsize=14)
 
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
@@ -257,7 +192,7 @@ def plot_chart(stock, save_path, score=None):
         figsize=(12,6), datetime_format='%b-%y'
     )
 
-    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
+    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14)
 
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
@@ -279,56 +214,32 @@ def plot_chart(stock, save_path, score=None):
 
 
 # ==========================
-# PDF
+# ✅ PDF FIX (CRITICAL)
 # ==========================
 def build_pdf(images, path):
 
     doc = SimpleDocTemplate(path, pagesize=letter)
     elements = []
 
+    page_w, page_h = letter
+
+    MAX_W = page_w - 40
+    MAX_H = page_h - 60   # strict height cap
+
     for img_path in images:
 
         img = ImageReader(img_path)
         w, h = img.getSize()
 
-        page_w, page_h = letter
-        scale = min((page_w-20)/w, (page_h-20)/h)
+        scale = min(MAX_W / w, MAX_H / h)
 
-        elements.append(Image(img_path, width=w*scale, height=h*scale))
-        elements.append(Spacer(1,8))
+        new_w = w * scale
+        new_h = h * scale
+
+        elements.append(Image(img_path, width=new_w, height=new_h))
+        elements.append(Spacer(1,10))
 
     doc.build(elements)
-
-
-# ==========================
-# GPT
-# ==========================
-def gpt_decision(pdf_path):
-
-    file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
-
-    PROMPT = """
-Institutional breakout system.
-
-Score each stock (0-10)
-Pick >=7
-
-Return:
-- STOCK | Score | Reason
-"""
-
-    res = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{
-            "role":"user",
-            "content":[
-                {"type":"input_text","text":PROMPT},
-                {"type":"input_file","file_id":file.id}
-            ]
-        }]
-    )
-
-    return res.output_text
 
 
 # ==========================
@@ -353,56 +264,16 @@ def run():
     os.makedirs(folder, exist_ok=True)
 
     images = []
-    trade_map = {}
 
     for s in shortlist:
         img = f"{folder}/{s}.png"
         plot_chart(s, img)
         images.append(img)
 
-        df = fetch(s)
-        trade_map[s] = create_trade(df)
-
     pdf_path = f"{folder}/charts.pdf"
     build_pdf(images, pdf_path)
 
-    send_document(pdf_path, "📄 Charts sent to GPT")
-
-    output = gpt_decision(pdf_path)
-    send_message(output[:3000])
-
-    scores, picks = parse_gpt_output(output)
-
-    images_scored = []
-    for s in shortlist:
-        img = f"{folder}/{s}_scored.png"
-        plot_chart(s, img, score=scores.get(s))
-        images_scored.append(img)
-
-    pdf_path2 = f"{folder}/charts_scored.pdf"
-    build_pdf(images_scored, pdf_path2)
-
-    send_document(pdf_path2, "📊 Charts with Scores")
-
-    for s in picks:
-        if s not in trade_map:
-            continue
-
-        entry, sl, qty = trade_map[s]
-
-        msg = f"""
-📈 *FINAL TRADE*
-
-{s}
-
-Entry: `{entry}`
-SL: `{sl}`
-Qty: `{qty}`
-"""
-
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
-
-        send_message(msg, buttons)
+    send_document(pdf_path, "📄 Charts generated")
 
 
 # ==========================
