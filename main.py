@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (PDF FIX + NO LAYOUT ERROR)
+# 🚀 FINAL SYSTEM (INSTITUTIONAL + CLEAN CHARTS)
 # ==============================================
 
 import os
@@ -29,12 +29,35 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CAPITAL = 1000000
 RISK_PER_TRADE = 0.01
 
+# ==========================
+# TELEGRAM
+# ==========================
+def send_message(text, buttons=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+
+    if buttons:
+        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
+
+    requests.post(url, data=payload)
+
+
+def send_document(path, caption=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    with open(path, "rb") as f:
+        requests.post(url, files={"document": f},
+                      data={"chat_id": CHAT_ID, "caption": caption or ""})
+
 
 # ==========================
 # NSE STOCK FETCH
 # ==========================
 def get_stocks():
-
     headers = {"User-Agent": "Mozilla/5.0"}
 
     indices = [
@@ -65,35 +88,11 @@ def get_stocks():
 
 
 # ==========================
-# TELEGRAM
-# ==========================
-def send_message(text, buttons=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-
-    if buttons:
-        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
-
-    requests.post(url, data=payload)
-
-
-def send_document(path, caption=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    with open(path, "rb") as f:
-        requests.post(url, files={"document": f},
-                      data={"chat_id": CHAT_ID, "caption": caption or ""})
-
-
-# ==========================
 # DATA
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
+
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -133,7 +132,7 @@ def filter_stock(df):
 
 
 # ==========================
-# TRADE
+# TRADE LOGIC
 # ==========================
 def create_trade(df):
     entry = df.iloc[-1]['High']
@@ -143,7 +142,7 @@ def create_trade(df):
 
 
 # ==========================
-# CHART (same clean version)
+# CHART ENGINE (FINAL)
 # ==========================
 def plot_chart(stock, save_path):
 
@@ -173,39 +172,58 @@ def plot_chart(stock, save_path):
         mpf.make_addplot(df['EMA200'], color='purple'),
     ]
 
+    apds_w = [
+        mpf.make_addplot(df_weekly['EMA10'], color='black'),
+        mpf.make_addplot(df_weekly['EMA21'], color='red'),
+        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
+        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
+    ]
+
+    legend = [
+        Patch(facecolor='black', label='EMA10'),
+        Patch(facecolor='red', label='EMA21'),
+        Patch(facecolor='blue', label='EMA50'),
+        Patch(facecolor='purple', label='EMA200')
+    ]
+
+    # DAILY
     fig1, ax1 = mpf.plot(
         df, type='candle', style=style, addplot=apds,
         volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y'
+        figsize=(12,6), datetime_format='%b-%y', xrotation=15
     )
 
     ax1[0].axhline(breakout, linestyle='--', color='green')
     ax1[0].axhspan(base_low, base_high, alpha=0.1)
-    ax1[0].set_title(f"{stock} (Daily)", fontsize=14)
+    ax1[0].legend(handles=legend)
+    ax1[0].set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
 
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
+    # WEEKLY
     fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style,
+        df_weekly, type='candle', style=style, addplot=apds_w,
         volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y'
+        figsize=(12,6), datetime_format='%b-%y', xrotation=15
     )
 
-    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14)
+    ax2[0].legend(handles=legend)
+    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
 
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
+    # MERGE
     fig = plt.figure(figsize=(12,9))
 
-    a1 = fig.add_subplot(2,1,1)
-    a1.imshow(plt.imread("d.png"))
-    a1.axis('off')
+    ax1 = fig.add_subplot(2,1,1)
+    ax1.imshow(plt.imread("d.png"))
+    ax1.axis('off')
 
-    a2 = fig.add_subplot(2,1,2)
-    a2.imshow(plt.imread("w.png"))
-    a2.axis('off')
+    ax2 = fig.add_subplot(2,1,2)
+    ax2.imshow(plt.imread("w.png"))
+    ax2.axis('off')
 
     plt.subplots_adjust(hspace=0.05)
 
@@ -214,32 +232,67 @@ def plot_chart(stock, save_path):
 
 
 # ==========================
-# ✅ PDF FIX (CRITICAL)
+# PDF BUILDER (KEY FIX)
 # ==========================
 def build_pdf(images, path):
 
     doc = SimpleDocTemplate(path, pagesize=letter)
     elements = []
 
-    page_w, page_h = letter
-
-    MAX_W = page_w - 40
-    MAX_H = page_h - 60   # strict height cap
-
     for img_path in images:
 
         img = ImageReader(img_path)
         w, h = img.getSize()
 
-        scale = min(MAX_W / w, MAX_H / h)
+        page_w, page_h = letter
+        scale = min((page_w-20)/w, (page_h-20)/h)
 
-        new_w = w * scale
-        new_h = h * scale
-
-        elements.append(Image(img_path, width=new_w, height=new_h))
-        elements.append(Spacer(1,10))
+        elements.append(Image(img_path, width=w*scale, height=h*scale))
+        elements.append(Spacer(1,8))
 
     doc.build(elements)
+
+
+# ==========================
+# GPT
+# ==========================
+def gpt_decision(pdf_path):
+
+    file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
+
+    PROMPT = """
+You are an institutional breakout trader.
+
+Analyze charts visually.
+
+Rules:
+- Strong trend (EMA alignment)
+- Tight base
+- Breakout near highs
+- Volume confirmation
+
+Score 0-10
+
+Pick only >=7
+
+Return:
+
+FINAL PICKS:
+- STOCK | Score | Reason
+"""
+
+    res = client.responses.create(
+        model="gpt-4.1-mini",
+        input=[{
+            "role":"user",
+            "content":[
+                {"type":"input_text","text":PROMPT},
+                {"type":"input_file","file_id":file.id}
+            ]
+        }]
+    )
+
+    return res.output_text
 
 
 # ==========================
@@ -264,16 +317,48 @@ def run():
     os.makedirs(folder, exist_ok=True)
 
     images = []
+    trade_map = {}
 
     for s in shortlist:
+
         img = f"{folder}/{s}.png"
         plot_chart(s, img)
         images.append(img)
 
+        df = fetch(s)
+        trade_map[s] = create_trade(df)
+
     pdf_path = f"{folder}/charts.pdf"
     build_pdf(images, pdf_path)
 
-    send_document(pdf_path, "📄 Charts generated")
+    send_document(pdf_path, "📄 Charts sent to GPT")
+
+    output = gpt_decision(pdf_path)
+    send_message(output[:3000])
+
+    # picks
+    picks = [l.split("|")[0].replace("-","").strip()
+             for l in output.split("\n") if l.startswith("-")]
+
+    for s in picks:
+        if s not in trade_map:
+            continue
+
+        entry, sl, qty = trade_map[s]
+
+        msg = f"""
+📈 *FINAL TRADE*
+
+{s}
+
+Entry: `{entry}`
+SL: `{sl}`
+Qty: `{qty}`
+"""
+
+        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
+
+        send_message(msg, buttons)
 
 
 # ==========================
