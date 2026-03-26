@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (PDF-QUALITY CHARTS FIXED)
+# 🚀 FINAL SYSTEM (CHART FIX + GAP CONTROL)
 # ==============================================
 
 import os
@@ -12,6 +12,7 @@ import mplfinance as mpf
 import matplotlib.pyplot as plt
 from datetime import datetime
 from openai import OpenAI
+from matplotlib.patches import Patch
 
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
 from reportlab.lib.pagesizes import letter
@@ -95,6 +96,9 @@ def get_stocks():
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
 
+    # ✅ FIX: datetime index
+    df.index = pd.to_datetime(df.index)
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -102,6 +106,8 @@ def fetch(stock):
 
 
 def to_weekly(df):
+    df.index = pd.to_datetime(df.index)
+
     return df.resample('W').agg({
         'Open':'first','High':'max','Low':'min',
         'Close':'last','Volume':'sum'
@@ -142,7 +148,7 @@ def create_trade(df):
 
 
 # ==========================
-# ✅ FIXED CHART ENGINE
+# ✅ UPDATED CHART ENGINE
 # ==========================
 def plot_chart(stock, save_path):
 
@@ -160,7 +166,6 @@ def plot_chart(stock, save_path):
     base_low = recent['Low'].min()
     base_high = recent['High'].max()
 
-    # style
     mc = mpf.make_marketcolors(
         up='green', down='red',
         volume={'up':'green','down':'red'}
@@ -168,19 +173,25 @@ def plot_chart(stock, save_path):
 
     style = mpf.make_mpf_style(base_mpf_style='yahoo', marketcolors=mc)
 
-    # EMA plots
     apds = [
-        mpf.make_addplot(df['EMA10'], color='red'),
-        mpf.make_addplot(df['EMA21'], color='purple'),
+        mpf.make_addplot(df['EMA10'], color='black'),
+        mpf.make_addplot(df['EMA21'], color='red'),
         mpf.make_addplot(df['EMA50'], color='blue'),
-        mpf.make_addplot(df['EMA200'], color='orange'),
+        mpf.make_addplot(df['EMA200'], color='purple'),
     ]
 
     apds_w = [
-        mpf.make_addplot(df_weekly['EMA10'], color='red'),
-        mpf.make_addplot(df_weekly['EMA21'], color='purple'),
+        mpf.make_addplot(df_weekly['EMA10'], color='black'),
+        mpf.make_addplot(df_weekly['EMA21'], color='red'),
         mpf.make_addplot(df_weekly['EMA50'], color='blue'),
-        mpf.make_addplot(df_weekly['EMA200'], color='orange'),
+        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
+    ]
+
+    legend_elements = [
+        Patch(facecolor='black', label='EMA10'),
+        Patch(facecolor='red', label='EMA21'),
+        Patch(facecolor='blue', label='EMA50'),
+        Patch(facecolor='purple', label='EMA200')
     ]
 
     # DAILY
@@ -189,18 +200,22 @@ def plot_chart(stock, save_path):
         type='candle',
         style=style,
         addplot=apds,
-        volume=True,  # ✅ FIX
+        volume=True,
         returnfig=True,
         figsize=(10,6),
-        title=f"{stock} (Daily)"
+        datetime_format='%b-%y',
+        xrotation=20
     )
 
     ax1 = axlist1[0]
     ax1.axhline(breakout, linestyle='--', color='green')
-    ax1.axhspan(base_low, base_high, alpha=0.1, color='blue')
+    ax1.axhspan(base_low, base_high, alpha=0.1)
+
+    ax1.legend(handles=legend_elements, loc='upper left')
+    ax1.set_title(f"{stock} (Daily)", fontsize=10)
 
     daily_path = save_path.replace(".png","_d.png")
-    fig1.savefig(daily_path, dpi=150)
+    fig1.savefig(daily_path, dpi=180, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
     # WEEKLY
@@ -212,14 +227,19 @@ def plot_chart(stock, save_path):
         volume=True,
         returnfig=True,
         figsize=(10,6),
-        title=f"{stock} (Weekly)"
+        datetime_format='%b-%y',
+        xrotation=20
     )
 
+    ax2 = axlist2[0]
+    ax2.legend(handles=legend_elements, loc='upper left')
+    ax2.set_title(f"{stock} (Weekly)", fontsize=10)
+
     weekly_path = save_path.replace(".png","_w.png")
-    fig2.savefig(weekly_path, dpi=150)
+    fig2.savefig(weekly_path, dpi=180, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE
+    # MERGE (WITH GAP)
     fig = plt.figure(figsize=(10,10))
 
     ax1 = fig.add_subplot(2,1,1)
@@ -230,8 +250,10 @@ def plot_chart(stock, save_path):
     ax2.imshow(plt.imread(weekly_path))
     ax2.axis('off')
 
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
+    # ✅ GAP CONTROL
+    plt.subplots_adjust(hspace=0.12)
+
+    plt.savefig(save_path, dpi=180, bbox_inches='tight', pad_inches=0.1)
     plt.close()
 
     print("✅ Chart:", stock)
