@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (SCORE COLOR + LABEL)
+# 🚀 FINAL SYSTEM (INSTITUTIONAL + SCORE OVERLAY)
 # ==============================================
 
 import os
@@ -28,6 +28,45 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CAPITAL = 1000000
 RISK_PER_TRADE = 0.01
+
+
+# ==========================
+# NSE STOCK FETCH (FIXED)
+# ==========================
+def get_stocks():
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    indices = [
+        "NIFTY 500",
+        "NIFTY MIDCAP 150",
+        "NIFTY SMALLCAP 250"
+    ]
+
+    stocks = set()
+
+    for index in indices:
+        try:
+            url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
+            res = requests.get(url, headers=headers, timeout=10)
+
+            data = res.json()
+
+            for item in data.get("data", []):
+                symbol = item.get("symbol")
+
+                if symbol and symbol.isalpha():
+                    stocks.add(symbol + ".NS")
+
+            time.sleep(0.5)
+
+        except Exception as e:
+            print("NSE fetch error:", e)
+
+    stocks = list(stocks)
+    print("Total stocks:", len(stocks))
+
+    return stocks
 
 
 # ==========================
@@ -185,7 +224,6 @@ def plot_chart(stock, save_path, score=None):
         Patch(facecolor='purple', label='EMA200')
     ]
 
-    # DAILY
     fig1, ax1 = mpf.plot(
         df, type='candle', style=style, addplot=apds,
         volume=True, returnfig=True,
@@ -197,10 +235,8 @@ def plot_chart(stock, save_path, score=None):
     ax.axhspan(base_low, base_high, alpha=0.1)
     ax.legend(handles=legend)
 
-    # ===== SCORE OVERLAY =====
     if score is not None:
         color, label = score_style(score)
-
         ax.text(
             0.78, 0.92,
             f"{score}/10\n{label}",
@@ -215,7 +251,6 @@ def plot_chart(stock, save_path, score=None):
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
-    # WEEKLY
     fig2, ax2 = mpf.plot(
         df_weekly, type='candle', style=style,
         volume=True, returnfig=True,
@@ -227,7 +262,6 @@ def plot_chart(stock, save_path, score=None):
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE
     fig = plt.figure(figsize=(12,9))
 
     a1 = fig.add_subplot(2,1,1)
@@ -276,20 +310,10 @@ def gpt_decision(pdf_path):
     PROMPT = """
 Institutional breakout system.
 
-Evaluate:
-
-- EMA alignment
-- Tight base
-- Breakout proximity
-- Volume expansion
-
-Score 0-10
-
+Score each stock (0-10)
 Pick >=7
 
 Return:
-
-FINAL PICKS:
 - STOCK | Score | Reason
 """
 
@@ -349,9 +373,7 @@ def run():
 
     scores, picks = parse_gpt_output(output)
 
-    # ===== REBUILD WITH SCORES =====
     images_scored = []
-
     for s in shortlist:
         img = f"{folder}/{s}_scored.png"
         plot_chart(s, img, score=scores.get(s))
@@ -362,7 +384,6 @@ def run():
 
     send_document(pdf_path2, "📊 Charts with Scores")
 
-    # ===== FINAL TRADES =====
     for s in picks:
         if s not in trade_map:
             continue
