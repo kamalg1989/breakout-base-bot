@@ -146,10 +146,21 @@ def create_trade(df):
     if risk_per_share <= 0:
         return None
 
-    risk_amt = CAPITAL * RISK_PER_TRADE
-    qty = int(risk_amt / risk_per_share)
+    # ✅ Risk-based sizing (0.25%)
+    risk_amt = CAPITAL * 0.0025
+    qty_risk = int(risk_amt / risk_per_share)
 
-    return round(entry,2), round(exit_price,2), qty
+    # ✅ Capital cap (10%)
+    max_capital_per_trade = CAPITAL * 0.10
+    qty_cap = int(max_capital_per_trade / entry)
+
+    # ✅ Final qty
+    qty = min(qty_risk, qty_cap)
+
+    if qty <= 0:
+        return None
+
+    return round(entry, 2), round(exit_price, 2), qty
 
 
 # ==========================
