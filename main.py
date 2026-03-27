@@ -240,18 +240,34 @@ def plot_chart(stock, save_path):
 # ==========================
 def build_pdf(images, path):
 
-    doc = SimpleDocTemplate(path, pagesize=letter)
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=letter,
+        leftMargin=20,
+        rightMargin=20,
+        topMargin=20,
+        bottomMargin=20
+    )
+
     elements = []
 
+    # ✅ TRUE SAFE AREA (critical fix)
+    MAX_W = doc.width          # usable width
+    MAX_H = doc.height * 0.90  # leave buffer (avoid overflow)
+
     for img_path in images:
+
         img = ImageReader(img_path)
         w, h = img.getSize()
 
-        page_w, page_h = letter
-        scale = min((page_w-20)/w, (page_h-20)/h)
+        # scale safely within frame
+        scale = min(MAX_W / w, MAX_H / h)
 
-        elements.append(Image(img_path, width=w*scale, height=h*scale))
-        elements.append(Spacer(1,8))
+        new_w = w * scale
+        new_h = h * scale
+
+        elements.append(Image(img_path, width=new_w, height=new_h))
+        elements.append(Spacer(1, 12))  # spacing between charts
 
     doc.build(elements)
 
