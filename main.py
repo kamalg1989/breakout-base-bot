@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (INSTITUTIONAL + CLEAN CHARTS)
+# 🚀 FINAL SYSTEM (ENTRY / EXIT FIXED)
 # ==============================================
 
 import os
@@ -28,6 +28,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CAPITAL = 1000000
 RISK_PER_TRADE = 0.01
+
 
 # ==========================
 # TELEGRAM
@@ -92,7 +93,6 @@ def get_stocks():
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -132,17 +132,28 @@ def filter_stock(df):
 
 
 # ==========================
-# TRADE LOGIC
+# TRADE LOGIC (FIXED)
 # ==========================
 def create_trade(df):
-    entry = df.iloc[-1]['High']
-    sl = entry * 0.92
-    qty = int((CAPITAL * RISK_PER_TRADE) / (entry - sl))
-    return round(entry,2), round(sl,2), qty
+
+    last = df.iloc[-1]
+
+    entry = float(last['High'])
+    exit_price = float(last['Low'])
+
+    risk_per_share = entry - exit_price
+
+    if risk_per_share <= 0:
+        return None
+
+    risk_amt = CAPITAL * RISK_PER_TRADE
+    qty = int(risk_amt / risk_per_share)
+
+    return round(entry,2), round(exit_price,2), qty
 
 
 # ==========================
-# CHART ENGINE (FINAL)
+# CHART ENGINE (UNCHANGED)
 # ==========================
 def plot_chart(stock, save_path):
 
@@ -186,53 +197,46 @@ def plot_chart(stock, save_path):
         Patch(facecolor='purple', label='EMA200')
     ]
 
-    # DAILY
     fig1, ax1 = mpf.plot(
         df, type='candle', style=style, addplot=apds,
         volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y', xrotation=15
+        figsize=(12,6), datetime_format='%b-%y'
     )
 
-    ax1[0].axhline(breakout, linestyle='--', color='green')
-    ax1[0].axhspan(base_low, base_high, alpha=0.1)
     ax1[0].legend(handles=legend)
-    ax1[0].set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
+    ax1[0].set_title(f"{stock} (Daily)", fontsize=14)
 
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
-    # WEEKLY
     fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style, addplot=apds_w,
+        df_weekly, type='candle', style=style,
         volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y', xrotation=15
+        figsize=(12,6), datetime_format='%b-%y'
     )
 
-    ax2[0].legend(handles=legend)
-    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
+    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14)
 
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE
     fig = plt.figure(figsize=(12,9))
 
-    ax1 = fig.add_subplot(2,1,1)
-    ax1.imshow(plt.imread("d.png"))
-    ax1.axis('off')
+    a1 = fig.add_subplot(2,1,1)
+    a1.imshow(plt.imread("d.png"))
+    a1.axis('off')
 
-    ax2 = fig.add_subplot(2,1,2)
-    ax2.imshow(plt.imread("w.png"))
-    ax2.axis('off')
+    a2 = fig.add_subplot(2,1,2)
+    a2.imshow(plt.imread("w.png"))
+    a2.axis('off')
 
     plt.subplots_adjust(hspace=0.05)
-
     plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close()
 
 
 # ==========================
-# PDF BUILDER (KEY FIX)
+# PDF BUILDER
 # ==========================
 def build_pdf(images, path):
 
@@ -240,7 +244,6 @@ def build_pdf(images, path):
     elements = []
 
     for img_path in images:
-
         img = ImageReader(img_path)
         w, h = img.getSize()
 
@@ -263,20 +266,10 @@ def gpt_decision(pdf_path):
     PROMPT = """
 You are an institutional breakout trader.
 
-Analyze charts visually.
-
-Rules:
-- Strong trend (EMA alignment)
-- Tight base
-- Breakout near highs
-- Volume confirmation
-
-Score 0-10
-
+Score each stock (0–10)
 Pick only >=7
 
 Return:
-
 FINAL PICKS:
 - STOCK | Score | Reason
 """
@@ -336,7 +329,6 @@ def run():
     output = gpt_decision(pdf_path)
     send_message(output[:3000])
 
-    # picks
     picks = [l.split("|")[0].replace("-","").strip()
              for l in output.split("\n") if l.startswith("-")]
 
@@ -344,7 +336,7 @@ def run():
         if s not in trade_map:
             continue
 
-        entry, sl, qty = trade_map[s]
+        entry, exit_price, qty = trade_map[s]
 
         msg = f"""
 📈 *FINAL TRADE*
@@ -352,7 +344,7 @@ def run():
 {s}
 
 Entry: `{entry}`
-SL: `{sl}`
+Exit: `{exit_price}`
 Qty: `{qty}`
 """
 
