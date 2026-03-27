@@ -173,27 +173,68 @@ def plot_chart(stock, save_path):
         df[f'EMA{ema}'] = df['Close'].ewm(span=ema).mean()
         df_weekly[f'EMA{ema}'] = df_weekly['Close'].ewm(span=ema).mean()
 
-    mc = mpf.make_marketcolors(up='green', down='red')
+    recent = df.tail(20)
+    breakout = recent['High'].max()
+    base_low = recent['Low'].min()
+    base_high = recent['High'].max()
+
+    mc = mpf.make_marketcolors(
+        up='green', down='red',
+        volume={'up':'green','down':'red'}
+    )
+
     style = mpf.make_mpf_style(base_mpf_style='yahoo', marketcolors=mc)
 
+    apds = [
+        mpf.make_addplot(df['EMA10'], color='black'),
+        mpf.make_addplot(df['EMA21'], color='red'),
+        mpf.make_addplot(df['EMA50'], color='blue'),
+        mpf.make_addplot(df['EMA200'], color='purple'),
+    ]
+
+    apds_w = [
+        mpf.make_addplot(df_weekly['EMA10'], color='black'),
+        mpf.make_addplot(df_weekly['EMA21'], color='red'),
+        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
+        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
+    ]
+
+    legend = [
+        Patch(facecolor='black', label='EMA10'),
+        Patch(facecolor='red', label='EMA21'),
+        Patch(facecolor='blue', label='EMA50'),
+        Patch(facecolor='purple', label='EMA200')
+    ]
+
+    # DAILY
     fig1, ax1 = mpf.plot(
-        df, type='candle', style=style,
+        df, type='candle', style=style, addplot=apds,
         volume=True, returnfig=True,
         figsize=(12,6), datetime_format='%b-%y'
     )
+
+    ax1[0].axhline(breakout, linestyle='--', color='green')
+    ax1[0].axhspan(base_low, base_high, alpha=0.1)
+    ax1[0].legend(handles=legend)
     ax1[0].set_title(f"{stock} (Daily)", fontsize=14)
+
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
+    # WEEKLY
     fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style,
+        df_weekly, type='candle', style=style, addplot=apds_w,
         volume=True, returnfig=True,
         figsize=(12,6), datetime_format='%b-%y'
     )
+
+    ax2[0].legend(handles=legend)
     ax2[0].set_title(f"{stock} (Weekly)", fontsize=14)
+
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
+    # MERGE
     fig = plt.figure(figsize=(12,9))
 
     a1 = fig.add_subplot(2,1,1)
