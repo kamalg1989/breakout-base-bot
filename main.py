@@ -177,37 +177,75 @@ def plot_chart(stock, df, save_path):
     base_low = recent['Low'].min()
     base_high = recent['High'].max()
 
-    mc = mpf.make_marketcolors(up='green', down='red')
+    mc = mpf.make_marketcolors(
+        up='green', down='red',
+        volume={'up':'green','down':'red'}
+    )
+
     style = mpf.make_mpf_style(base_mpf_style='yahoo', marketcolors=mc)
 
-    apds = [mpf.make_addplot(df[f'EMA{e}']) for e in [10,21,50,200]]
-    apds_w = [mpf.make_addplot(df_weekly[f'EMA{e}']) for e in [10,21,50,200]]
+    apds = [
+        mpf.make_addplot(df['EMA10'], color='black'),
+        mpf.make_addplot(df['EMA21'], color='red'),
+        mpf.make_addplot(df['EMA50'], color='blue'),
+        mpf.make_addplot(df['EMA200'], color='purple'),
+    ]
 
-    # DAILY
-    fig1, ax1 = mpf.plot(df, type='candle', style=style, addplot=apds,
-                         volume=True, returnfig=True)
+    apds_w = [
+        mpf.make_addplot(df_weekly['EMA10'], color='black'),
+        mpf.make_addplot(df_weekly['EMA21'], color='red'),
+        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
+        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
+    ]
 
-    ax1[0].axhline(breakout, linestyle='--')
+    # ===== DAILY =====
+    fig1, ax1 = mpf.plot(
+        df,
+        type='candle',
+        style=style,
+        addplot=apds,
+        volume=True,
+        returnfig=True,
+        figsize=(12,6),
+        datetime_format='%b-%y'
+    )
+
+    ax1[0].axhline(breakout, linestyle='--', color='green')
     ax1[0].axhspan(base_low, base_high, alpha=0.1)
-    fig1.savefig("d.png")
+
+    daily_path = save_path.replace(".png", "_d.png")
+    fig1.savefig(daily_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
-    # WEEKLY
-    fig2, ax2 = mpf.plot(df_weekly, type='candle', style=style,
-                         addplot=apds_w, volume=True, returnfig=True)
+    # ===== WEEKLY =====
+    fig2, ax2 = mpf.plot(
+        df_weekly,
+        type='candle',
+        style=style,
+        addplot=apds_w,
+        volume=True,
+        returnfig=True,
+        figsize=(12,6),
+        datetime_format='%b-%y'
+    )
 
-    fig2.savefig("w.png")
+    weekly_path = save_path.replace(".png", "_w.png")
+    fig2.savefig(weekly_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE
-    fig = plt.figure(figsize=(10,8))
+    # ===== MERGE =====
+    fig = plt.figure(figsize=(12,9))
+
     a1 = fig.add_subplot(2,1,1)
-    a1.imshow(plt.imread("d.png")); a1.axis('off')
+    a1.imshow(plt.imread(daily_path))
+    a1.axis('off')
 
     a2 = fig.add_subplot(2,1,2)
-    a2.imshow(plt.imread("w.png")); a2.axis('off')
+    a2.imshow(plt.imread(weekly_path))
+    a2.axis('off')
 
-    plt.savefig(save_path)
+    plt.subplots_adjust(hspace=0.05)
+    plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close()
 
 
