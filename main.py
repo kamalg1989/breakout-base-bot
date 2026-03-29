@@ -1,11 +1,10 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (INSTITUTIONAL + STABLE)
+# 🚀 BREAKOUT BOT (FIXED + STABLE + IMPROVED)
 # ==============================================
 
 import os
 import json
 import time
-import re
 import requests
 import pandas as pd
 import yfinance as yf
@@ -14,7 +13,6 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from openai import OpenAI
 from matplotlib.patches import Patch
-
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
@@ -27,7 +25,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL = 1000000
+CAPITAL = float(os.getenv("CAPITAL", 1000000))
 
 
 # ==========================
@@ -56,23 +54,22 @@ def send_document(path, caption=None):
 
 
 # ==========================
-# NSE STOCK FETCH
+# NSE STOCK FETCH (FIXED)
 # ==========================
 def get_stocks():
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    indices = [
-        "NIFTY 500",
-        "NIFTY MIDCAP 150",
-        "NIFTY SMALLCAP 250"
-    ]
+    session = requests.Session()
+    session.get("https://www.nseindia.com", headers=headers)
+
+    indices = ["NIFTY 500", "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250"]
 
     stocks = set()
 
     for index in indices:
         try:
             url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            res = requests.get(url, headers=headers, timeout=10)
+            res = session.get(url, headers=headers, timeout=10)
             data = res.json()
 
             for item in data.get("data", []):
@@ -80,10 +77,10 @@ def get_stocks():
                 if symbol and symbol.isalpha():
                     stocks.add(symbol + ".NS")
 
-            time.sleep(0.5)
+            time.sleep(0.3)
 
-        except:
-            continue
+        except Exception as e:
+            print("NSE ERROR:", e)
 
     return list(stocks)
 
@@ -109,7 +106,7 @@ def to_weekly(df):
 
 
 # ==========================
-# FILTER
+# FILTER (IMPROVED)
 # ==========================
 def filter_stock(df):
 
@@ -126,48 +123,49 @@ def filter_stock(df):
     cond2 = base_range < 0.15
 
     vol_avg = df['Volume'].rolling(20).mean()
-    cond3 = df.iloc[-1]['Volume'] > 0.8 * vol_avg.iloc[-1]
+    cond3 = df.iloc[-1]['Volume'] > 1.5 * vol_avg.iloc[-1]
 
-    return cond1 and cond2 and cond3
+    # breakout confirmation
+    breakout = df['High'].shift(1).rolling(20).max()
+    cond4 = df.iloc[-1]['Close'] >= breakout.iloc[-1]
+
+    return cond1 and cond2 and cond3 and cond4
 
 
 # ==========================
-# TRADE LOGIC
+# TRADE LOGIC (FIXED)
 # ==========================
 def create_trade(df):
 
-    last = df.iloc[-1]
+    recent = df.tail(20)
 
-    entry = float(last['High'])
-    exit_price = float(last['Low'])
+    entry = float(recent['High'].max())
+    exit_price = float(recent['Low'].tail(5).min())
 
     risk_per_share = entry - exit_price
 
     if risk_per_share <= 0:
         return None
 
-    # risk 0.25%
     risk_amt = CAPITAL * 0.0025
     qty_risk = int(risk_amt / risk_per_share)
 
-    # capital cap 10%
-    max_cap = CAPITAL * 0.10
-    qty_cap = int(max_cap / entry)
+    max_capital_per_trade = CAPITAL * 0.10
+    qty_cap = int(max_capital_per_trade / entry)
 
     qty = min(qty_risk, qty_cap)
 
     if qty <= 0:
         return None
 
-    return round(entry,2), round(exit_price,2), qty
+    return round(entry, 2), round(exit_price, 2), qty
 
 
 # ==========================
 # CHART ENGINE
 # ==========================
-def plot_chart(stock, save_path):
+def plot_chart(stock, df, save_path):
 
-    df = fetch(stock)
     df_weekly = to_weekly(df.copy())
 
     for ema in [10,21,50,200]:
@@ -179,95 +177,52 @@ def plot_chart(stock, save_path):
     base_low = recent['Low'].min()
     base_high = recent['High'].max()
 
-    mc = mpf.make_marketcolors(
-        up='green', down='red',
-        volume={'up':'green','down':'red'}
-    )
-
+    mc = mpf.make_marketcolors(up='green', down='red')
     style = mpf.make_mpf_style(base_mpf_style='yahoo', marketcolors=mc)
 
-    apds = [
-        mpf.make_addplot(df['EMA10'], color='black'),
-        mpf.make_addplot(df['EMA21'], color='red'),
-        mpf.make_addplot(df['EMA50'], color='blue'),
-        mpf.make_addplot(df['EMA200'], color='purple'),
-    ]
-
-    apds_w = [
-        mpf.make_addplot(df_weekly['EMA10'], color='black'),
-        mpf.make_addplot(df_weekly['EMA21'], color='red'),
-        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
-        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
-    ]
-
-    legend = [
-        Patch(facecolor='black', label='EMA10'),
-        Patch(facecolor='red', label='EMA21'),
-        Patch(facecolor='blue', label='EMA50'),
-        Patch(facecolor='purple', label='EMA200')
-    ]
+    apds = [mpf.make_addplot(df[f'EMA{e}']) for e in [10,21,50,200]]
+    apds_w = [mpf.make_addplot(df_weekly[f'EMA{e}']) for e in [10,21,50,200]]
 
     # DAILY
-    fig1, ax1 = mpf.plot(
-        df, type='candle', style=style, addplot=apds,
-        volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y'
-    )
+    fig1, ax1 = mpf.plot(df, type='candle', style=style, addplot=apds,
+                         volume=True, returnfig=True)
 
-    ax = ax1[0]
-    ax.axhline(breakout, linestyle='--', color='green')
-    ax.axhspan(base_low, base_high, alpha=0.12)
-    ax.legend(handles=legend)
-    ax.set_title(f"{stock} (Daily)", fontsize=14)
-
-    fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
+    ax1[0].axhline(breakout, linestyle='--')
+    ax1[0].axhspan(base_low, base_high, alpha=0.1)
+    fig1.savefig("d.png")
     plt.close(fig1)
 
     # WEEKLY
-    fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style, addplot=apds_w,
-        volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y'
-    )
+    fig2, ax2 = mpf.plot(df_weekly, type='candle', style=style,
+                         addplot=apds_w, volume=True, returnfig=True)
 
-    ax2[0].legend(handles=legend)
-    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14)
-
-    fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
+    fig2.savefig("w.png")
     plt.close(fig2)
 
     # MERGE
-    fig = plt.figure(figsize=(12,9))
+    fig = plt.figure(figsize=(10,8))
     a1 = fig.add_subplot(2,1,1)
-    a1.imshow(plt.imread("d.png"))
-    a1.axis('off')
+    a1.imshow(plt.imread("d.png")); a1.axis('off')
 
     a2 = fig.add_subplot(2,1,2)
-    a2.imshow(plt.imread("w.png"))
-    a2.axis('off')
+    a2.imshow(plt.imread("w.png")); a2.axis('off')
 
-    plt.subplots_adjust(hspace=0.05)
-    plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
+    plt.savefig(save_path)
     plt.close()
 
 
 # ==========================
-# PDF BUILDER (SAFE)
+# PDF
 # ==========================
 def build_pdf(images, path):
 
     doc = SimpleDocTemplate(path, pagesize=letter)
-
     elements = []
-
-    MAX_W = doc.width
-    MAX_H = doc.height * 0.9
 
     for img_path in images:
         img = ImageReader(img_path)
         w, h = img.getSize()
-
-        scale = min(MAX_W / w, MAX_H / h)
+        scale = min(doc.width / w, doc.height * 0.9 / h)
 
         elements.append(Image(img_path, width=w*scale, height=h*scale))
         elements.append(Spacer(1, 10))
@@ -276,31 +231,28 @@ def build_pdf(images, path):
 
 
 # ==========================
-# GPT (STRICT JSON)
+# GPT
 # ==========================
 def gpt_decision(pdf_path):
 
     file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
 
     PROMPT = """
-Return ONLY valid JSON.
+Return ONLY JSON.
 
+Filter best breakout stocks.
+Reject weak setups.
+
+Format:
 {
-  "picks":[
-    {
-      "stock":"ABC.NS",
-      "score":8.5,
-      "quality":"STRONG",
-      "reason":"...",
-      "entry_type":"Trend Bar"
-    }
-  ]
+ "picks":[
+  {"stock":"ABC.NS","score":8,"quality":"STRONG","reason":"...","entry_type":"Trend"}
+ ]
 }
 """
 
     res = client.responses.create(
-        model="gpt-4.1-mini",
-        temperature=0,
+        model="gpt-5-mini",
         input=[{
             "role":"user",
             "content":[
@@ -310,16 +262,12 @@ Return ONLY valid JSON.
         }]
     )
 
-    return res.output[0].content[0].text
+    return res.output_text
 
 
-# ==========================
-# PARSER
-# ==========================
 def parse_gpt_output(output):
     try:
-        json_text = re.search(r'\{.*\}', output, re.DOTALL).group()
-        return json.loads(json_text).get("picks", [])
+        return json.loads(output).get("picks", [])
     except:
         return []
 
@@ -331,14 +279,21 @@ def run():
 
     stocks = get_stocks()
 
+    df_cache = {}
     shortlist = []
+
     for s in stocks:
         try:
             df = fetch(s)
+            df_cache[s] = df
+
             if filter_stock(df):
                 shortlist.append(s)
-        except:
-            continue
+
+            time.sleep(0.2)
+
+        except Exception as e:
+            print("ERROR:", s, e)
 
     shortlist = shortlist[:10]
 
@@ -350,35 +305,36 @@ def run():
 
     for s in shortlist:
 
+        df = df_cache[s]
+
         img = f"{folder}/{s}.png"
-        plot_chart(s, img)
+        plot_chart(s, df.copy(), img)
         images.append(img)
 
-        df = fetch(s)
-        trade = create_trade(df)
-
-        if trade:
-            trade_map[s] = trade
+        trade_map[s] = create_trade(df)
 
     pdf_path = f"{folder}/charts.pdf"
     build_pdf(images, pdf_path)
 
-    send_document(pdf_path, "📄 Charts")
+    send_document(pdf_path, "📄 Charts sent to GPT")
 
     output = gpt_decision(pdf_path)
+    send_message(f"GPT RAW:\n{output[:1000]}")
+
     picks = parse_gpt_output(output)
+
+    if not picks:
+        picks = [{"stock": s, "score": 7, "quality": "Fallback", "reason": "Auto pick", "entry_type": "N/A"} for s in shortlist[:3]]
 
     for p in picks:
 
-        if p["score"] < 7:
-            continue
-
         s = p["stock"]
+        trade = trade_map.get(s)
 
-        if s not in trade_map:
+        if not trade:
             continue
 
-        entry, exit_price, qty = trade_map[s]
+        entry, exit_price, qty = trade
 
         msg = f"""
 📈 *FINAL TRADE*
@@ -393,13 +349,13 @@ Qty: `{qty}`
 Reason: {p['reason']}
 """
 
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
+        buttons = [[{
+            "text":"✅ Confirm Buy",
+            "callback_data":f"BUY|{s}|{qty}|{exit_price}"
+        }]]
 
         send_message(msg, buttons)
 
 
-# ==========================
-# RUN
-# ==========================
 if __name__ == "__main__":
     run()
