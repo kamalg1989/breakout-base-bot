@@ -404,7 +404,7 @@ Reason: {p['reason']}
 Type: {p['entry_type']}
 """
 
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
+        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}|{exit_price}"}]]
 
         send_message(msg, buttons)
 
