@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (STABLE + FIXED ONLY)
+# 🚀 FINAL SYSTEM (STABLE + DB COMPATIBLE)
 # ==============================================
 
 import os
@@ -56,7 +56,7 @@ def send_document(path, caption=None):
 
 
 # ==========================
-# NSE STOCK FETCH (UNCHANGED)
+# NSE STOCK FETCH
 # ==========================
 def get_stocks():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -89,7 +89,7 @@ def get_stocks():
 
 
 # ==========================
-# DATA (FIXED: EMPTY DF CHECK)
+# DATA
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
@@ -113,7 +113,7 @@ def to_weekly(df):
 
 
 # ==========================
-# FILTER (UNCHANGED)
+# FILTER
 # ==========================
 def filter_stock(df):
 
@@ -136,7 +136,7 @@ def filter_stock(df):
 
 
 # ==========================
-# TRADE LOGIC (UNCHANGED)
+# TRADE LOGIC
 # ==========================
 def create_trade(df):
 
@@ -168,14 +168,12 @@ def create_trade(df):
 
 
 # ==========================
-# CHART ENGINE (UNCHANGED + SAFE CHECK)
+# CHART ENGINE (UNCHANGED)
 # ==========================
 def plot_chart(stock, save_path):
 
     df = fetch(stock)
-
-    if df is None or df.empty:
-        print("⚠️ Skipping chart:", stock)
+    if df is None:
         return False
 
     df_weekly = to_weekly(df.copy())
@@ -217,45 +215,31 @@ def plot_chart(stock, save_path):
         Patch(facecolor='purple', label='EMA200')
     ]
 
-    # DAILY
-    fig1, ax1 = mpf.plot(
-        df, type='candle', style=style, addplot=apds,
-        volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y'
-    )
+    fig1, ax1 = mpf.plot(df, type='candle', style=style, addplot=apds,
+                         volume=True, returnfig=True, figsize=(12,6))
 
-    ax = ax1[0]
-    ax.axhline(breakout, linestyle='--', color='green')
-    ax.axhspan(base_low, base_high, alpha=0.12)
-    ax.legend(handles=legend)
+    ax1[0].axhline(breakout, linestyle='--', color='green')
+    ax1[0].axhspan(base_low, base_high, alpha=0.12)
+    ax1[0].legend(handles=legend)
 
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
-    # WEEKLY
-    fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style, addplot=apds_w,
-        volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y'
-    )
+    fig2, ax2 = mpf.plot(df_weekly, type='candle', style=style, addplot=apds_w,
+                         volume=True, returnfig=True, figsize=(12,6))
 
     ax2[0].legend(handles=legend)
 
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
-    # MERGE
     fig = plt.figure(figsize=(12,9))
-
     a1 = fig.add_subplot(2,1,1)
-    a1.imshow(plt.imread("d.png"))
-    a1.axis('off')
+    a1.imshow(plt.imread("d.png")); a1.axis('off')
 
     a2 = fig.add_subplot(2,1,2)
-    a2.imshow(plt.imread("w.png"))
-    a2.axis('off')
+    a2.imshow(plt.imread("w.png")); a2.axis('off')
 
-    plt.subplots_adjust(hspace=0.05)
     plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close()
 
@@ -263,7 +247,31 @@ def plot_chart(stock, save_path):
 
 
 # ==========================
-# GPT (FIXED)
+# PDF BUILDER (RESTORED)
+# ==========================
+def build_pdf(images, path):
+
+    doc = SimpleDocTemplate(path, pagesize=letter)
+
+    elements = []
+
+    MAX_W = doc.width
+    MAX_H = doc.height * 0.9
+
+    for img_path in images:
+        img = ImageReader(img_path)
+        w, h = img.getSize()
+
+        scale = min(MAX_W / w, MAX_H / h)
+
+        elements.append(Image(img_path, width=w*scale, height=h*scale))
+        elements.append(Spacer(1, 10))
+
+    doc.build(elements)
+
+
+# ==========================
+# GPT (FIXED ONLY)
 # ==========================
 def gpt_decision(pdf_path):
 
@@ -297,11 +305,11 @@ Return ONLY valid JSON.
         }]
     )
 
-    return res.output_text   # ✅ FIXED
+    return res.output_text
 
 
 # ==========================
-# PARSER (UNCHANGED)
+# PARSER
 # ==========================
 def parse_gpt_output(output):
     try:
@@ -312,7 +320,7 @@ def parse_gpt_output(output):
 
 
 # ==========================
-# MAIN (MINOR FIX)
+# MAIN
 # ==========================
 def run():
 
@@ -324,8 +332,8 @@ def run():
             df = fetch(s)
             if filter_stock(df):
                 shortlist.append(s)
-        except Exception as e:
-            print("FILTER ERROR:", s, e)
+        except:
+            continue
 
     shortlist = shortlist[:10]
 
@@ -339,9 +347,7 @@ def run():
 
         img = f"{folder}/{s}.png"
 
-        success = plot_chart(s, img)
-
-        if not success:
+        if not plot_chart(s, img):
             continue
 
         images.append(img)
@@ -391,13 +397,11 @@ Qty: `{qty}`
 Reason: {p['reason']}
 """
 
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
+        # ✅ FIX: include exit price for DB + SL engine
+        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}|{exit_price}"}]]
 
         send_message(msg, buttons)
 
 
-# ==========================
-# RUN
-# ==========================
 if __name__ == "__main__":
     run()
