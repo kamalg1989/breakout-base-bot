@@ -1,11 +1,10 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (STABLE + DB COMPATIBLE)
+# 🚀 FINAL SYSTEM (GPT UPGRADED + JSON OUTPUT)
 # ==============================================
 
 import os
 import json
 import time
-import re
 import requests
 import pandas as pd
 import yfinance as yf
@@ -82,8 +81,8 @@ def get_stocks():
 
             time.sleep(0.5)
 
-        except Exception as e:
-            print("NSE ERROR:", e)
+        except:
+            continue
 
     return list(stocks)
 
@@ -93,10 +92,6 @@ def get_stocks():
 # ==========================
 def fetch(stock):
     df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-
-    if df is None or df.empty:
-        return None
-
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -117,7 +112,7 @@ def to_weekly(df):
 # ==========================
 def filter_stock(df):
 
-    if df is None or len(df) < 50:
+    if len(df) < 50:
         return False
 
     df['EMA50'] = df['Close'].ewm(span=50).mean()
@@ -140,9 +135,6 @@ def filter_stock(df):
 # ==========================
 def create_trade(df):
 
-    if df is None:
-        return None
-
     last = df.iloc[-1]
 
     entry = float(last['High'])
@@ -153,29 +145,28 @@ def create_trade(df):
     if risk_per_share <= 0:
         return None
 
+    # 0.25% risk
     risk_amt = CAPITAL * 0.0025
     qty_risk = int(risk_amt / risk_per_share)
 
-    max_cap = CAPITAL * 0.10
-    qty_cap = int(max_cap / entry)
+    # 10% cap
+    max_capital_per_trade = CAPITAL * 0.10
+    qty_cap = int(max_capital_per_trade / entry)
 
     qty = min(qty_risk, qty_cap)
 
     if qty <= 0:
         return None
 
-    return round(entry,2), round(exit_price,2), qty
+    return round(entry, 2), round(exit_price, 2), qty
 
 
 # ==========================
-# CHART ENGINE (UNCHANGED)
+# CHART ENGINE
 # ==========================
 def plot_chart(stock, save_path):
 
     df = fetch(stock)
-    if df is None:
-        return False
-
     df_weekly = to_weekly(df.copy())
 
     for ema in [10,21,50,200]:
@@ -215,39 +206,52 @@ def plot_chart(stock, save_path):
         Patch(facecolor='purple', label='EMA200')
     ]
 
-    fig1, ax1 = mpf.plot(df, type='candle', style=style, addplot=apds,
-                         volume=True, returnfig=True, figsize=(12,6))
+    # DAILY
+    fig1, ax1 = mpf.plot(
+        df, type='candle', style=style, addplot=apds,
+        volume=True, returnfig=True,
+        figsize=(12,6), datetime_format='%b-%y'
+    )
 
     ax1[0].axhline(breakout, linestyle='--', color='green')
-    ax1[0].axhspan(base_low, base_high, alpha=0.12)
+    ax1[0].axhspan(base_low, base_high, alpha=0.1)
     ax1[0].legend(handles=legend)
+    ax1[0].set_title(f"{stock} (Daily)", fontsize=14)
 
     fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig1)
 
-    fig2, ax2 = mpf.plot(df_weekly, type='candle', style=style, addplot=apds_w,
-                         volume=True, returnfig=True, figsize=(12,6))
+    # WEEKLY
+    fig2, ax2 = mpf.plot(
+        df_weekly, type='candle', style=style, addplot=apds_w,
+        volume=True, returnfig=True,
+        figsize=(12,6), datetime_format='%b-%y'
+    )
 
     ax2[0].legend(handles=legend)
+    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14)
 
     fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close(fig2)
 
+    # MERGE
     fig = plt.figure(figsize=(12,9))
+
     a1 = fig.add_subplot(2,1,1)
-    a1.imshow(plt.imread("d.png")); a1.axis('off')
+    a1.imshow(plt.imread("d.png"))
+    a1.axis('off')
 
     a2 = fig.add_subplot(2,1,2)
-    a2.imshow(plt.imread("w.png")); a2.axis('off')
+    a2.imshow(plt.imread("w.png"))
+    a2.axis('off')
 
+    plt.subplots_adjust(hspace=0.05)
     plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close()
 
-    return True
-
 
 # ==========================
-# PDF BUILDER (RESTORED)
+# PDF
 # ==========================
 def build_pdf(images, path):
 
@@ -255,14 +259,11 @@ def build_pdf(images, path):
 
     elements = []
 
-    MAX_W = doc.width
-    MAX_H = doc.height * 0.9
-
     for img_path in images:
         img = ImageReader(img_path)
         w, h = img.getSize()
 
-        scale = min(MAX_W / w, MAX_H / h)
+        scale = min(doc.width / w, doc.height * 0.9 / h)
 
         elements.append(Image(img_path, width=w*scale, height=h*scale))
         elements.append(Spacer(1, 10))
@@ -271,31 +272,49 @@ def build_pdf(images, path):
 
 
 # ==========================
-# GPT (FIXED ONLY)
+# GPT (UPGRADED)
 # ==========================
 def gpt_decision(pdf_path):
 
     file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
 
     PROMPT = """
-Return ONLY valid JSON.
+You are an institutional breakout trader following strict rules.
+
+Analyze charts and return ONLY JSON.
+
+RULES:
+- Strong trend (EMA50 > EMA200)
+- Tight base (<15%)
+- Near breakout
+- Volume expansion
+- Strong entry candle
+
+Reject weak setups.
+
+SCORING:
+9-10 perfect
+8 strong
+7 acceptable
+<7 reject
+
+OUTPUT FORMAT:
 
 {
-  "picks":[
+  "picks": [
     {
-      "stock":"ABC.NS",
-      "score":8.5,
-      "quality":"STRONG",
-      "reason":"...",
-      "entry_type":"Trend Bar"
+      "stock": "ABC.NS",
+      "score": 8.5,
+      "quality": "STRONG",
+      "reason": "tight base + volume breakout",
+      "entry_type": "Trend Bar"
     }
   ]
 }
 """
 
     res = client.responses.create(
-        model="gpt-5-mini",
-        temperature=0,
+        model="gpt-4.1-mini",
         input=[{
             "role":"user",
             "content":[
@@ -309,12 +328,12 @@ Return ONLY valid JSON.
 
 
 # ==========================
-# PARSER
+# SAFE PARSER
 # ==========================
 def parse_gpt_output(output):
     try:
-        json_text = re.search(r'\{.*\}', output, re.DOTALL).group()
-        return json.loads(json_text).get("picks", [])
+        data = json.loads(output)
+        return data.get("picks", [])
     except:
         return []
 
@@ -346,36 +365,23 @@ def run():
     for s in shortlist:
 
         img = f"{folder}/{s}.png"
-
-        if not plot_chart(s, img):
-            continue
-
+        plot_chart(s, img)
         images.append(img)
 
         df = fetch(s)
-        trade = create_trade(df)
-
-        if trade:
-            trade_map[s] = trade
-
-    if not images:
-        print("❌ No charts generated")
-        return
+        trade_map[s] = create_trade(df)
 
     pdf_path = f"{folder}/charts.pdf"
     build_pdf(images, pdf_path)
 
-    send_document(pdf_path, "📄 Charts")
+    send_document(pdf_path, "📄 Charts sent to GPT")
 
     output = gpt_decision(pdf_path)
-    print("GPT RAW:", output)
+    send_message(f"GPT RAW:\n{output[:2000]}")
 
     picks = parse_gpt_output(output)
 
     for p in picks:
-
-        if p.get("score", 0) < 7:
-            continue
 
         s = p["stock"]
 
@@ -395,13 +401,16 @@ Exit: `{exit_price}`
 Qty: `{qty}`
 
 Reason: {p['reason']}
+Type: {p['entry_type']}
 """
 
-        # ✅ FIX: include exit price for DB + SL engine
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}|{exit_price}"}]]
+        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
 
         send_message(msg, buttons)
 
 
+# ==========================
+# RUN
+# ==========================
 if __name__ == "__main__":
     run()
