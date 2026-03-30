@@ -346,16 +346,45 @@ def run():
     stocks = get_stocks()
 
     shortlist = []
+    scored = []
+
     for s in stocks:
         try:
             df = fetch(s)
-            if filter_stock(df):
-                shortlist.append(s)
+    
+            if not filter_stock(df):
+                continue
+    
+            # ensure EMA exists
+            df['EMA50'] = df['Close'].ewm(span=50).mean()
+    
+            recent = df.tail(20)
+    
+            base_high = recent['High'].max()
+            base_low = recent['Low'].min()
+            current = df['Close'].iloc[-1]
+    
+            if base_low == 0:
+                continue
+    
+            tightness = (base_high - base_low) / base_low
+    
+            score = (
+                (current / base_high) * 0.5 +   # breakout proximity
+                (current / df['EMA50'].iloc[-1]) * 0.3 +  # trend strength
+                (1 - tightness) * 0.2           # tighter base
+            )
+    
+            scored.append((s, score))
+    
         except:
             continue
-    print(f"📊 Shortlist all : {shortlist}")
+
+
+    # sort best first
+    scored.sort(key=lambda x: x[1], reverse=True)
     
-    shortlist = shortlist[:10]
+    shortlist = [s for s, _ in scored[:10]]
     
     print(f"📊 Shortlist 10: {shortlist}")
     
