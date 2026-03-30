@@ -442,6 +442,15 @@ def run():
 
         entry, exit_price, qty = trade_map[s]
 
+        # ===== derive additional fields =====
+        risk = entry - exit_price
+        target = round(entry + (risk * 2), 2)
+
+        strategy = "BREAKOUT_BASE"
+        timeframe = "SWING"
+        score = p.get("score", 0)
+        setup_id = f"{datetime.now().strftime('%Y%m%d')}_{s.replace('.NS','')}"
+
         msg = f"""
 📈 *FINAL TRADE*
 
@@ -449,14 +458,18 @@ def run():
 Score: {p['score']} ({p['quality']})
 
 Entry: `{entry}`
-Exit: `{exit_price}`
+SL: `{exit_price}`
+Target: `{target}`
 Qty: `{qty}`
 
 Reason: {p['reason']}
 Type: {p['entry_type']}
 """
 
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}|{exit_price}"}]]
+        buttons = [[{
+            "text": "✅ Confirm Buy",
+            "callback_data": f"BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}"
+        }]]
 
         send_message(msg, buttons)
 
