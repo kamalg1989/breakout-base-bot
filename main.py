@@ -353,9 +353,12 @@ def run():
                 shortlist.append(s)
         except:
             continue
-
+    print(f"📊 Shortlist all : {shortlist}")
+    
     shortlist = shortlist[:10]
-
+    
+    print(f"📊 Shortlist 10: {shortlist}")
+    
     folder = f"run_{datetime.now().strftime('%H%M%S')}"
     os.makedirs(folder, exist_ok=True)
 
