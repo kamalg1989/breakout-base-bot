@@ -333,7 +333,7 @@ def gpt_decision(pdf_path):
     """
 
     res = client.responses.create(
-        model="gpt-5.3-mini",
+        model="gpt-4.1-mini"
         temperature=0,
         input=[{
             "role":"user",
