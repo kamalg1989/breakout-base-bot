@@ -489,6 +489,18 @@ def run():
         timeframe = "SWING"
         score = p.get("score", 0)
         setup_id = f"{datetime.now().strftime('%Y%m%d')}_{s.replace('.NS','')}"
+        print("🧾 FULL TRADE PAYLOAD:")
+        print({
+            "symbol": s,
+            "qty": qty,
+            "entry": entry,
+            "sl": exit_price,
+            "target": target,
+            "strategy": strategy,
+            "timeframe": timeframe,
+            "score": score,
+            "setup_id": setup_id
+        })
 
         msg = f"""
 📈 *FINAL TRADE*
@@ -505,9 +517,11 @@ Reason: {p['reason']}
 Type: {p['entry_type']}
 """
 
+        short_cb = f"BUY|{setup_id}"
+
         buttons = [[{
             "text": "✅ Confirm Buy",
-            "callback_data": f"BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}"
+            "callback_data": short_cb
         }]]
 
         print("🧪 FINAL TELEGRAM MESSAGE:")
@@ -516,7 +530,7 @@ Type: {p['entry_type']}
         print(buttons)
 
         print(f"📤 Sending Telegram alert for {s}")
-        print(f"📤 Callback: BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}")
+        print(f"📤 Callback (SHORT): {short_cb}")
 
         send_message(msg, buttons)
 
