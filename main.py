@@ -279,42 +279,62 @@ def gpt_decision(pdf_path):
     file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
 
     PROMPT = """
-You are an institutional breakout trader following strict rules.
-
-Analyze charts and return ONLY JSON.
-
-RULES:
-- Strong trend (EMA50 > EMA200)
-- Tight base (<15%)
-- Near breakout
-- Volume expansion
-- Strong entry candle
-
-Reject weak setups.
-
-SCORING:
-9-10 perfect
-8 strong
-7 acceptable
-<7 reject
-
-OUTPUT FORMAT:
-
-{
-  "picks": [
+    You are an institutional breakout trader following strict rules.
+    
+    Analyze charts and return ONLY valid JSON. No explanation. No text outside JSON.
+    
+    RULES:
+    - Strong trend (EMA50 > EMA200)
+    - Tight base (<15%)
+    - Near breakout (price close to recent high)
+    - Volume expansion
+    - Strong entry candle
+    
+    Reject weak setups strictly.
+    
+    SCORING:
+    9-10 perfect
+    8 strong
+    7 acceptable
+    <7 reject
+    
+    SELECTION RULES (STRICT):
+    - Return MAX 3 stocks ONLY
+    - If unsure, return fewer (0 or 1 allowed)
+    - NEVER return more than 3
+    - Only include stocks with score >= 7
+    
+    RANKING LOGIC (DETERMINISTIC):
+    If multiple stocks qualify, rank strictly by:
+    1. Tightest base (lowest range %)
+    2. Closest to breakout (price near resistance)
+    3. Strongest volume expansion
+    
+    Always pick top ranked stocks only.
+    
+    OUTPUT FORMAT (STRICT JSON):
+    
     {
-      "stock": "ABC.NS",
-      "score": 8.5,
-      "quality": "STRONG",
-      "reason": "tight base + volume breakout",
-      "entry_type": "Trend Bar"
+      "picks": [
+        {
+          "stock": "ABC.NS",
+          "score": 8.5,
+          "quality": "STRONG",
+          "reason": "tight base + volume breakout",
+          "entry_type": "Trend Bar"
+        }
+      ]
     }
-  ]
-}
-"""
+    
+    If no valid setups, return:
+    {
+      "picks": []
+    }
+    """
 
     res = client.responses.create(
-        model="gpt-4.1-mini",
+        model="gpt-5.3-mini",
+        temperature=0,
         input=[{
             "role":"user",
             "content":[
