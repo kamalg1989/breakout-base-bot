@@ -44,14 +44,36 @@ def send_message(text, buttons=None):
     if buttons:
         payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
 
-    requests.post(url, data=payload)
+    print("📡 Telegram sendMessage payload:")
+    print(payload)
+
+    try:
+        res = requests.post(url, data=payload, timeout=10)
+        print(f"📡 Telegram status: {res.status_code}")
+        print(f"📡 Telegram response: {res.text}")
+    except Exception as e:
+        print(f"❌ Telegram send failed: {e}")
 
 
 def send_document(path, caption=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    with open(path, "rb") as f:
-        requests.post(url, files={"document": f},
-                      data={"chat_id": CHAT_ID, "caption": caption or ""})
+
+    print(f"📡 Sending document: {path}")
+
+    try:
+        with open(path, "rb") as f:
+            res = requests.post(
+                url,
+                files={"document": f},
+                data={"chat_id": CHAT_ID, "caption": caption or ""},
+                timeout=20
+            )
+
+        print(f"📡 Document status: {res.status_code}")
+        print(f"📡 Document response: {res.text}")
+
+    except Exception as e:
+        print(f"❌ Document send failed: {e}")
 
 
 # ==========================
@@ -371,43 +393,45 @@ def run():
     for s in stocks:
         try:
             df = fetch(s)
-    
+
             if not filter_stock(df):
                 continue
-    
+
             # ensure EMA exists
             df['EMA50'] = df['Close'].ewm(span=50).mean()
-    
+
             recent = df.tail(20)
-    
+
             base_high = recent['High'].max()
             base_low = recent['Low'].min()
             current = df['Close'].iloc[-1]
-    
+
             if base_low == 0:
                 continue
-    
+
             tightness = (base_high - base_low) / base_low
-    
+
             score = (
                 (current / base_high) * 0.5 +   # breakout proximity
                 (current / df['EMA50'].iloc[-1]) * 0.3 +  # trend strength
                 (1 - tightness) * 0.2           # tighter base
             )
-    
+
             scored.append((s, score))
-    
+
         except:
             continue
 
 
     # sort best first
     scored.sort(key=lambda x: x[1], reverse=True)
-    
+
     shortlist = [s for s, _ in scored[:10]]
-    
+
     print(f"📊 Shortlist 10: {shortlist}")
-    
+
+    print(f"🔍 TELEGRAM CONFIG → CHAT_ID={CHAT_ID}, TOKEN_SET={bool(TELEGRAM_TOKEN)}")
+
     folder = f"run_{datetime.now().strftime('%H%M%S')}"
     os.makedirs(folder, exist_ok=True)
 
@@ -435,6 +459,9 @@ def run():
     print(f"🧠 Parsed Picks: {picks}")
     print(f"🧠 Picks Count: {len(picks)}")
 
+    if not picks:
+        print("⚠️ No picks returned from GPT. No Telegram messages will be sent.")
+
     for p in picks:
         print(f"🔍 Processing pick: {p}")
 
@@ -449,6 +476,10 @@ def run():
         print(f"✅ Found trade setup for {s}: {trade_map[s]}")
 
         entry, exit_price, qty = trade_map[s]
+
+        if not entry or not exit_price or not qty:
+            print(f"⚠️ Invalid trade values for {s}: {trade_map[s]}")
+            continue
 
         # ===== derive additional fields =====
         risk = entry - exit_price
@@ -478,6 +509,11 @@ Type: {p['entry_type']}
             "text": "✅ Confirm Buy",
             "callback_data": f"BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}"
         }]]
+
+        print("🧪 FINAL TELEGRAM MESSAGE:")
+        print(msg)
+        print("🧪 BUTTONS:")
+        print(buttons)
 
         print(f"📤 Sending Telegram alert for {s}")
         print(f"📤 Callback: BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}")
