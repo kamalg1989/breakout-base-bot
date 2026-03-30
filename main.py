@@ -428,17 +428,25 @@ def run():
 
     send_document(pdf_path, "📄 Charts sent to GPT")
 
-    output = gpt_decision(pdf_path)
-    send_message(f"GPT RAW:\n{output[:2000]}")
+    print("🧠 GPT RAW OUTPUT:")
+    print(output := gpt_decision(pdf_path))
 
     picks = parse_gpt_output(output)
+    print(f"🧠 Parsed Picks: {picks}")
+    print(f"🧠 Picks Count: {len(picks)}")
 
     for p in picks:
+        print(f"🔍 Processing pick: {p}")
 
         s = p["stock"]
 
+        print(f"📌 Checking trade_map for {s}")
+        print(f"📌 Available keys: {list(trade_map.keys())}")
+
         if s not in trade_map:
             continue
+
+        print(f"✅ Found trade setup for {s}: {trade_map[s]}")
 
         entry, exit_price, qty = trade_map[s]
 
@@ -470,6 +478,9 @@ Type: {p['entry_type']}
             "text": "✅ Confirm Buy",
             "callback_data": f"BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}"
         }]]
+
+        print(f"📤 Sending Telegram alert for {s}")
+        print(f"📤 Callback: BUY|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}|{setup_id}")
 
         send_message(msg, buttons)
 
